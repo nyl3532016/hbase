@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,13 +24,19 @@ import org.apache.hadoop.hbase.coprocessor.MultiRowMutationEndpoint;
 import org.apache.hadoop.hbase.regionserver.NoOpScanPolicyObserver;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.junit.AfterClass;
 import org.junit.ClassRule;
 import org.junit.experimental.categories.Category;
+import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 /**
  * Test all client operations with a coprocessor that just implements the default flush/compact/scan
  * policy.
+ *
+ * <p>Base class was split into three so this class got split into three. See below for other parts.
+ * @see TestFromClientSide4
+ * @see TestFromClientSide5
  */
 @Category({ LargeTests.class, ClientTests.class })
 public class TestFromClientSideWithCoprocessor extends TestFromClientSide {
@@ -46,6 +52,11 @@ public class TestFromClientSideWithCoprocessor extends TestFromClientSide {
         { MasterRegistry.class, 1},
         { ZKConnectionRegistry.class, 1}
     });
+  }
+
+  @AfterClass
+  public static void tearDownAfterClass() throws Exception {
+    afterClass();
   }
 
   public TestFromClientSideWithCoprocessor(Class registry, int numHedgedReqs) throws Exception {

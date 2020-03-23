@@ -116,6 +116,7 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.Row;
 import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -944,7 +945,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
           " initialization.");
       }
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Region open journal:\n" + status.prettyPrintJournal());
+        LOG.debug("Region open journal for {}:\n{}", this.getRegionInfo().getEncodedName(),
+          status.prettyPrintJournal());
       }
       status.cleanup();
     }
@@ -1553,7 +1555,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       }
     } finally {
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Region close journal:\n" + status.prettyPrintJournal());
+        LOG.debug("Region close journal for {}:\n{}", this.getRegionInfo().getEncodedName(),
+          status.prettyPrintJournal());
       }
       status.cleanup();
     }
@@ -1680,7 +1683,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       if (!stores.isEmpty()) {
         // initialize the thread pool for closing stores in parallel.
         ThreadPoolExecutor storeCloserThreadPool =
-          getStoreOpenAndCloseThreadPool("StoreCloserThread-" +
+          getStoreOpenAndCloseThreadPool("StoreCloser-" +
             getRegionInfo().getRegionNameAsString());
         CompletionService<Pair<byte[], Collection<HStoreFile>>> completionService =
           new ExecutorCompletionService<>(storeCloserThreadPool);
@@ -1755,7 +1758,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         Closeables.close(this.metricsRegionWrapper, true);
       }
       status.markComplete("Closed");
-      LOG.info("Closed " + this);
+      LOG.info("Closed {}", this);
       return result;
     } finally {
       lock.writeLock().unlock();
@@ -2266,7 +2269,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     } finally {
       if (requestNeedsCancellation) store.cancelRequestedCompaction(compaction);
       if (status != null) {
-        LOG.debug("Compaction status journal:\n\t" + status.prettyPrintJournal());
+        LOG.debug("Compaction status journal for {}:\n\t{}", this.getRegionInfo().getEncodedName(),
+          status.prettyPrintJournal());
         status.cleanup();
       }
     }
@@ -2413,7 +2417,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       }
     } finally {
       lock.readLock().unlock();
-      LOG.debug("Flush status journal:\n\t" + status.prettyPrintJournal());
+      LOG.debug("Flush status journal for {}:\n\t{}", this.getRegionInfo().getEncodedName(),
+        status.prettyPrintJournal());
       status.cleanup();
     }
   }
@@ -4176,7 +4181,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
   @Override
   public boolean checkAndMutate(byte[] row, byte[] family, byte[] qualifier, CompareOperator op,
     ByteArrayComparable comparator, TimeRange timeRange, Mutation mutation) throws IOException {
-    checkMutationType(mutation, row);
     return doCheckAndRowMutate(row, family, qualifier, op, comparator, null, timeRange, null,
       mutation);
   }
@@ -4212,6 +4216,12 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     // need these commented out checks.
     // if (rowMutations == null && mutation == null) throw new DoNotRetryIOException("Both null");
     // if (rowMutations != null && mutation != null) throw new DoNotRetryIOException("Both set");
+    if (mutation != null) {
+      checkMutationType(mutation);
+      checkRow(mutation, row);
+    } else {
+      checkRow(rowMutations, row);
+    }
     checkReadOnly();
     // TODO, add check for value length also move this check to the client
     checkResources();
@@ -4327,13 +4337,17 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     }
   }
 
-  private void checkMutationType(final Mutation mutation, final byte [] row)
+  private void checkMutationType(final Mutation mutation)
   throws DoNotRetryIOException {
     boolean isPut = mutation instanceof Put;
     if (!isPut && !(mutation instanceof Delete)) {
       throw new org.apache.hadoop.hbase.DoNotRetryIOException("Action must be Put or Delete");
     }
-    if (!Bytes.equals(row, mutation.getRow())) {
+  }
+
+  private void checkRow(final Row action, final byte[] row)
+    throws DoNotRetryIOException {
+    if (!Bytes.equals(row, action.getRow())) {
       throw new org.apache.hadoop.hbase.DoNotRetryIOException("Action's getRow must match");
     }
   }
@@ -4740,7 +4754,9 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         LOG.warn("Null or non-existent edits file: " + edits);
         continue;
       }
-      if (isZeroLengthThenDelete(fs, edits)) continue;
+      if (isZeroLengthThenDelete(fs, fs.getFileStatus(edits), edits)) {
+        continue;
+      }
 
       long maxSeqId;
       String fileName = edits.getName();
@@ -4760,27 +4776,27 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         // if seqId is greater
         seqid = Math.max(seqid, replayRecoveredEdits(edits, maxSeqIdInStores, reporter, fs));
       } catch (IOException e) {
-        boolean skipErrors = conf.getBoolean(
-            HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS,
-            conf.getBoolean(
-                "hbase.skip.errors",
-                HConstants.DEFAULT_HREGION_EDITS_REPLAY_SKIP_ERRORS));
-        if (conf.get("hbase.skip.errors") != null) {
-          LOG.warn(
-              "The property 'hbase.skip.errors' has been deprecated. Please use " +
-                  HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS + " instead.");
-        }
-        if (skipErrors) {
-          Path p = WALSplitUtil.moveAsideBadEditsFile(fs, edits);
-          LOG.error(HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS
-              + "=true so continuing. Renamed " + edits +
-              " as " + p, e);
-        } else {
-          throw e;
-        }
+        handleException(fs, edits, e);
       }
     }
     return seqid;
+  }
+
+  private void handleException(FileSystem fs, Path edits, IOException e) throws IOException {
+    boolean skipErrors = conf.getBoolean(HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS,
+      conf.getBoolean("hbase.skip.errors", HConstants.DEFAULT_HREGION_EDITS_REPLAY_SKIP_ERRORS));
+    if (conf.get("hbase.skip.errors") != null) {
+      LOG.warn("The property 'hbase.skip.errors' has been deprecated. Please use "
+          + HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS + " instead.");
+    }
+    if (skipErrors) {
+      Path p = WALSplitUtil.moveAsideBadEditsFile(fs, edits);
+      LOG.error(HConstants.HREGION_EDITS_REPLAY_SKIP_ERRORS + "=true so continuing. Renamed "
+          + edits + " as " + p,
+        e);
+    } else {
+      throw e;
+    }
   }
 
   /**
@@ -5382,12 +5398,22 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
           WALSplitUtil.getRecoveredHFiles(fs.getFileSystem(), regionDir, familyName);
       if (files != null && files.length != 0) {
         for (FileStatus file : files) {
-          store.assertBulkLoadHFileOk(file.getPath());
-          Pair<Path, Path> pair = store.preBulkLoadHFile(file.getPath().toString(), -1);
+          Path filePath = file.getPath();
+          // If file length is zero then delete it
+          if (isZeroLengthThenDelete(fs.getFileSystem(), file, filePath)) {
+            continue;
+          }
+
+          try {
+            store.assertBulkLoadHFileOk(filePath);
+          } catch (IOException e) {
+            handleException(fs.getFileSystem(), filePath, e);
+            continue;
+          }
+          Pair<Path, Path> pair = store.preBulkLoadHFile(filePath.toString(), -1);
           store.bulkLoadHFile(Bytes.toBytes(familyName), pair.getFirst().toString(),
-              pair.getSecond());
-          maxSeqId =
-              Math.max(maxSeqId, WALSplitUtil.getSeqIdForRecoveredHFile(file.getPath().getName()));
+            pair.getSecond());
+          maxSeqId = Math.max(maxSeqId, WALSplitUtil.getSeqIdForRecoveredHFile(filePath.getName()));
         }
         if (this.rsServices != null && store.needsCompaction()) {
           this.rsServices.getCompactionRequestor()
@@ -5866,9 +5892,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * @return True if file was zero-length (and if so, we'll delete it in here).
    * @throws IOException
    */
-  private static boolean isZeroLengthThenDelete(final FileSystem fs, final Path p)
-      throws IOException {
-    FileStatus stat = fs.getFileStatus(p);
+  private static boolean isZeroLengthThenDelete(final FileSystem fs, final FileStatus stat,
+      final Path p) throws IOException {
     if (stat.getLen() > 0) {
       return false;
     }
