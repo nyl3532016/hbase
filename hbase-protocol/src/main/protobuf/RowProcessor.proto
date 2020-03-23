@@ -15,8 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-syntax = "proto2";
-
 /**
  * Defines a protocol to perform multi row transactions.
  * See BaseRowProcessorEndpoint for the implementation.

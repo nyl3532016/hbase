@@ -39,7 +39,7 @@
   <groupId>org.apache.hbase</groupId>
   <artifactId>hbase</artifactId>
   <packaging>pom</packaging>
-  <version>2.4.0-SNAPSHOT</version>
+  <version>2.3.0-SNAPSHOT</version>
   <name>Apache HBase</name>
   <description>
     Apache HBase is the Hadoop database. Use it when you need
@@ -629,12 +629,13 @@
           <version>${buildnumber.maven.version}</version>
         </plugin>
         <plugin>
-          <groupId>com.github.spotbugs</groupId>
-          <artifactId>spotbugs-maven-plugin</artifactId>
-          <version>${spotbugs.maven.version}</version>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>findbugs-maven-plugin</artifactId>
+          <version>${findbugs.maven.version}</version>
+          <!--NOTE: Findbugs 3.0.0 requires jdk7-->
           <configuration>
-            <excludeFilterFile>${project.basedir}/../dev-support/spotbugs-exclude.xml</excludeFilterFile>
-            <spotbugsXmlOutput>true</spotbugsXmlOutput>
+            <excludeFilterFile>${project.basedir}/../dev-support/findbugs-exclude.xml</excludeFilterFile>
+            <findbugsXmlOutput>true</findbugsXmlOutput>
             <xmlOutput>true</xmlOutput>
             <effort>Max</effort>
           </configuration>
@@ -820,23 +821,6 @@
             </execution>
           </executions>
         </plugin>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-enforcer-plugin</artifactId>
-          <version>${enforcer.version}</version>
-          <dependencies>
-            <dependency>
-              <groupId>org.codehaus.mojo</groupId>
-              <artifactId>extra-enforcer-rules</artifactId>
-              <version>${extra.enforcer.version}</version>
-            </dependency>
-            <dependency>
-              <groupId>de.skuzzle.enforcer</groupId>
-              <artifactId>restrict-imports-enforcer-rule</artifactId>
-              <version>${restrict-imports.enforcer.version}</version>
-            </dependency>
-          </dependencies>
-        </plugin>
       </plugins>
     </pluginManagement>
     <plugins>
@@ -875,6 +859,20 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${enforcer.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>extra-enforcer-rules</artifactId>
+            <version>${extra.enforcer.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>de.skuzzle.enforcer</groupId>
+            <artifactId>restrict-imports-enforcer-rule</artifactId>
+            <version>${restrict-imports.enforcer.version}</version>
+          </dependency>
+        </dependencies>
+        <!-- version set by parent -->
         <executions>
           <execution>
             <id>hadoop-profile-min-maven-min-java-banned-xerces</id>
@@ -1079,19 +1077,19 @@
           </transformationSets>
         </configuration>
       </plugin>
-      <!-- Special configuration for spotbugs just in the parent so
+      <!-- Special configuration for findbugs just in the parent so
       the filter file location can be more general (see definition in pluginManagement) -->
       <plugin>
-        <groupId>com.github.spotbugs</groupId>
-        <artifactId>spotbugs-maven-plugin</artifactId>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>findbugs-maven-plugin</artifactId>
         <executions>
           <execution>
             <inherited>false</inherited>
             <goals>
-              <goal>spotbugs</goal>
+              <goal>findbugs</goal>
             </goals>
             <configuration>
-              <excludeFilterFile>${basedir}/dev-support/spotbugs-exclude.xml</excludeFilterFile>
+              <excludeFilterFile>${basedir}/dev-support/findbugs-exclude.xml</excludeFilterFile>
             </configuration>
           </execution>
         </executions>
@@ -1293,7 +1291,7 @@
     <maven.min.version>3.0.4</maven.min.version>
     <java.min.version>${compileSource}</java.min.version>
     <!-- Dependencies -->
-    <hadoop-two.version>2.10.0</hadoop-two.version>
+    <hadoop-two.version>2.8.5</hadoop-two.version>
     <hadoop-three.version>3.1.2</hadoop-three.version>
     <!-- These must be defined here for downstream build tools that don't look at profiles.
          They ought to match the values found in our default hadoop profile, which is
@@ -1370,6 +1368,8 @@
     <checkstyle.version>8.28</checkstyle.version>
     <exec.maven.version>1.6.0</exec.maven.version>
     <error-prone.version>2.3.4</error-prone.version>
+    <findbugs-annotations>1.3.9-1</findbugs-annotations>
+    <findbugs.maven.version>3.0.4</findbugs.maven.version>
     <jamon.plugin.version>2.4.2</jamon.plugin.version>
     <lifecycle.mapping.version>1.0.0</lifecycle.mapping.version>
     <maven.antrun.version>1.8</maven.antrun.version>
@@ -1378,9 +1378,7 @@
     <maven.eclipse.version>2.10</maven.eclipse.version>
     <maven.warbucks.version>1.1.0</maven.warbucks.version>
     <os.maven.version>1.5.0.Final</os.maven.version>
-    <findbugs-annotations.version>1.3.9-1</findbugs-annotations.version>
-    <spotbugs.version>3.1.12</spotbugs.version>
-    <spotbugs.maven.version>3.1.12.2</spotbugs.maven.version>
+    <spotbugs.version>3.1.11</spotbugs.version>
     <surefire.version>3.0.0-M4</surefire.version>
     <wagon.ssh.version>2.12</wagon.ssh.version>
     <xml.maven.version>1.0.1</xml.maven.version>
@@ -1418,16 +1416,11 @@
     <surefire.Xmx>2800m</surefire.Xmx>
     <surefire.cygwinXmx>2800m</surefire.cygwinXmx>
     <!--Mark our test runs with '-Dhbase.build.id' so we can identify a surefire test as ours in a process listing
-
-      And for netty eventloops that have no explicit configuration, netty sets
-      nioeventloopgroup thread count to CPU count * 2. Thats too much for mini
-      clusters/tests.
      -->
     <hbase-surefire.argLine>-enableassertions -Dhbase.build.id=${build.id} -Xmx${surefire.Xmx}
       -Djava.security.egd=file:/dev/./urandom -Djava.net.preferIPv4Stack=true
       -Djava.awt.headless=true -Djdk.net.URLClassPath.disableClassPathURLCheck=true
       -Dorg.apache.hbase.thirdparty.io.netty.leakDetection.level=advanced
-      -Dio.netty.eventLoopThreads=3
     </hbase-surefire.argLine>
     <hbase-surefire.cygwin-argLine>-enableassertions -Xmx${surefire.cygwinXmx}
       -Djava.security.egd=file:/dev/./urandom -Djava.net.preferIPv4Stack=true
@@ -1718,7 +1711,7 @@
       <dependency>
         <groupId>com.github.stephenc.findbugs</groupId>
         <artifactId>findbugs-annotations</artifactId>
-        <version>${findbugs-annotations.version}</version>
+        <version>${findbugs-annotations}</version>
       </dependency>
       <!-- General dependencies -->
       <dependency>
@@ -2216,6 +2209,25 @@
       <build>
         <pluginManagement>
           <plugins>
+            <plugin>
+              <groupId>org.codehaus.mojo</groupId>
+              <artifactId>findbugs-maven-plugin</artifactId>
+              <version>${findbugs.maven.version}</version>
+              <!--NOTE: Findbugs 3.0.0 requires jdk7-->
+              <configuration>
+                <excludeFilterFile>${project.basedir}/../dev-support/findbugs-exclude.xml</excludeFilterFile>
+                <findbugsXmlOutput>true</findbugsXmlOutput>
+                <xmlOutput>true</xmlOutput>
+                <effort>Max</effort>
+              </configuration>
+              <dependencies>
+                <dependency>
+                  <groupId>com.github.spotbugs</groupId>
+                  <artifactId>spotbugs</artifactId>
+                  <version>${spotbugs.version}</version>
+                </dependency>
+              </dependencies>
+            </plugin>
           </plugins>
         </pluginManagement>
       </build>
@@ -2225,45 +2237,10 @@
       <activation>
         <jdk>[1.11,)</jdk>
       </activation>
-      <properties>
-        <!-- TODO: replicate logic for windows support -->
-        <argLine>--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED ${hbase-surefire.argLine}</argLine>
-      </properties>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-enforcer-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>hadoop3-profile-required</id>
-                <goals>
-                  <goal>enforce</goal>
-                </goals>
-                <configuration>
-                  <rules>
-                    <requireProperty>
-                      <!--
-                        $ JAVA_HOME=... mvn -Dhadoop.profile=3.0 -PrunSmallTests help:active-profiles enforcer:display-info clean test
-                        enforcer plugin does not see active profiles on sub-modules, so enforce based
-                        on the presence of the activation property and value.
-                      -->
-                      <property>hadoop.profile</property>
-                      <regex>.*3\.0$</regex>
-                      <message>
-                        HBase with JDK11 requires Hadoop3. Activate the profile with `-Dhadoop.profile=3.0`.
-                      </message>
-                      <regexMessage>
-                        HBase with JDK11 requires Hadoop3. Activate the profile with `-Dhadoop.profile=3.0`.
-                      </regexMessage>
-                    </requireProperty>
-                  </rules>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
+      <dependencyManagement>
+        <dependencies>
+        </dependencies>
+      </dependencyManagement>
     </profile>
     <!-- profile activated by the Jenkins patch testing job -->
     <profile>
@@ -2737,16 +2714,6 @@
             </exclusions>
           </dependency>
           <dependency>
-            <!--
-              a missing transitive dependency on JDK9+ (obsoleted by Hadoop-3.3.0+, HADOOP-15775)
-              duplicated here because hadoop-3.0 piggy-backs off the hadoop-2.0 profile.
-            -->
-            <groupId>javax.activation</groupId>
-            <artifactId>javax.activation-api</artifactId>
-            <version>1.2.0</version>
-            <scope>test</scope>
-          </dependency>
-          <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client</artifactId>
             <version>${hadoop-two.version}</version>
@@ -2807,18 +2774,6 @@
            <artifactId>hadoop-annotations</artifactId>
            <version>${hadoop-two.version}</version>
          </dependency>
-
-          <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-distcp</artifactId>
-            <version>${hadoop-two.version}</version>
-          </dependency>
-
-          <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-hdfs-client</artifactId>
-            <version>${hadoop-two.version}</version>
-          </dependency>
         </dependencies>
       </dependencyManagement>
     </profile>
@@ -3089,15 +3044,6 @@
            </exclusions>
          </dependency>
          <dependency>
-           <!--
-             a missing transitive dependency on JDK9+ (obsoleted by Hadoop-3.3.0+, HADOOP-15775)
-           -->
-           <groupId>javax.activation</groupId>
-           <artifactId>javax.activation-api</artifactId>
-           <version>1.2.0</version>
-           <scope>test</scope>
-         </dependency>
-         <dependency>
            <groupId>org.apache.hadoop</groupId>
            <artifactId>hadoop-common</artifactId>
            <type>test-jar</type>
@@ -3175,18 +3121,6 @@
             <version>${hadoop-three.version}</version>
             <scope>test</scope>
           </dependency>
-
-         <dependency>
-           <groupId>org.apache.hadoop</groupId>
-           <artifactId>hadoop-distcp</artifactId>
-           <version>${hadoop-three.version}</version>
-         </dependency>
-
-         <dependency>
-           <groupId>org.apache.hadoop</groupId>
-           <artifactId>hadoop-hdfs-client</artifactId>
-           <version>${hadoop-three.version}</version>
-         </dependency>
        </dependencies>
      </dependencyManagement>
 
@@ -3626,7 +3560,7 @@
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <enforcer.skip>true</enforcer.skip>
         <checkstyle.skip>true</checkstyle.skip>
-        <spotbugs.skip>true</spotbugs.skip>
+        <findbugs.skip>true</findbugs.skip>
         <warbucks.skip>true</warbucks.skip>
       </properties>
     </profile>

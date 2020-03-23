@@ -103,7 +103,7 @@ public class SplitLogWorker implements Runnable {
           server.getCoordinatedStateManager() == null ? null
               : server.getCoordinatedStateManager().getSplitLogWorkerCoordination();
       if (!WALSplitter.splitLogFile(walDir, fs.getFileStatus(new Path(walDir, filename)), fs, conf,
-        p, sequenceIdChecker, splitLogWorkerCoordination, factory, server)) {
+        p, sequenceIdChecker, splitLogWorkerCoordination, factory)) {
         return Status.PREEMPTED;
       }
     } catch (InterruptedIOException iioe) {

@@ -165,7 +165,8 @@ class AsyncConnectionImpl implements AsyncConnection {
               }
             }, conf, listenerClass);
         } catch (IOException e) {
-          LOG.warn("Failed create of ClusterStatusListener, not a critical, ignoring...", e);
+          LOG.warn("Failed to create ClusterStatusListener, not a critical problem, ignoring...",
+            e);
         }
       }
     }

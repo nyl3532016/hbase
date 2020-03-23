@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hbase.util;
 
-import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.startsWith;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
@@ -70,7 +69,7 @@ public class TestFutureUtils {
     } catch (HBaseIOException e) {
       assertEquals("Inject error!", e.getMessage());
       StackTraceElement[] elements = e.getStackTrace();
-      assertThat(elements[0].toString(), containsString("java.lang.Thread.getStackTrace"));
+      assertThat(elements[0].toString(), startsWith("java.lang.Thread.getStackTrace"));
       assertThat(elements[1].toString(),
         startsWith("org.apache.hadoop.hbase.util.FutureUtils.setStackTrace"));
       assertThat(elements[2].toString(),

@@ -233,7 +233,7 @@ class BlockingRpcConnection extends RpcConnection implements Runnable {
     this.connectionHeaderWithLength = baos.getBuffer();
 
     UserGroupInformation ticket = remoteId.ticket.getUGI();
-    this.threadName = "BRPC Connection (" + this.rpcClient.socketFactory.hashCode() + ") to "
+    this.threadName = "IPC Client (" + this.rpcClient.socketFactory.hashCode() + ") connection to "
         + remoteId.getAddress().toString()
         + ((ticket == null) ? " from an unknown user" : (" from " + ticket.getUserName()));
 

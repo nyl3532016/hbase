@@ -1,10 +1,10 @@
 Naming/HeredocDelimiterNaming:
   Enabled: false
 
-Layout/HeredocIndentation:
+Layout/IndentHeredoc:
   Enabled: false
 
-Layout/LineLength:
+Metrics/LineLength:
   Max: 100
 
 Metrics/MethodLength:

@@ -215,12 +215,7 @@ EOF
 
       def get_regions_for_server(regions_for_table, server_name)
         regions_for_table.select do |hregion|
-          actual_server_name = hregion.getServerName
-          if actual_server_name == nil
-            raise "Some regions might be splitting or merging or transitioning due to other" \
-            " reasons"
-          end
-          accept_server_name? server_name, actual_server_name.toString
+          accept_server_name? server_name, hregion.getServerName.toString
         end
       end
 

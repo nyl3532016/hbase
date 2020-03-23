@@ -29,6 +29,7 @@ import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -256,13 +257,18 @@ public class ReplicationSink {
           List<String>>>>> entry : bulkLoadsPerClusters.entrySet()) {
           Map<String, List<Pair<byte[], List<String>>>> bulkLoadHFileMap = entry.getValue();
           if (bulkLoadHFileMap != null && !bulkLoadHFileMap.isEmpty()) {
-            LOG.debug("Replicating {} bulk loaded data", entry.getKey().toString());
-            Configuration providerConf = this.provider.getConf(this.conf, replicationClusterId);
-            try (HFileReplicator hFileReplicator = new HFileReplicator(providerConf,
+            if(LOG.isDebugEnabled()) {
+              LOG.debug("Started replicating bulk loaded data from cluster ids: {}.",
+                entry.getKey().toString());
+            }
+            HFileReplicator hFileReplicator =
+              new HFileReplicator(this.provider.getConf(this.conf, replicationClusterId),
                 sourceBaseNamespaceDirPath, sourceHFileArchiveDirPath, bulkLoadHFileMap, conf,
-                getConnection(), entry.getKey())) {
-              hFileReplicator.replicate();
-              LOG.debug("Finished replicating {} bulk loaded data", entry.getKey().toString());
+                getConnection(), entry.getKey());
+            hFileReplicator.replicate();
+            if(LOG.isDebugEnabled()) {
+              LOG.debug("Finished replicating bulk loaded data from cluster id: {}",
+                entry.getKey().toString());
             }
           }
         }

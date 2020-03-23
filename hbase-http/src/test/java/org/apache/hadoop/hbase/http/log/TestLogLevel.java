@@ -480,7 +480,7 @@ public class TestLogLevel {
     Throwable t = throwable;
     while (t != null) {
       String msg = t.toString();
-      if (msg != null && msg.toLowerCase().contains(substr.toLowerCase())) {
+      if (msg != null && msg.contains(substr)) {
         return;
       }
       t = t.getCause();

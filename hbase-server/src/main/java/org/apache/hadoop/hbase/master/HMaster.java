@@ -49,6 +49,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.servlet.ServletException;
@@ -80,7 +81,6 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotDisabledException;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.UnknownRegionException;
-import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.RegionInfo;
@@ -220,7 +220,6 @@ import org.slf4j.LoggerFactory;
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUtils;
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoResponse.CompactionState;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
@@ -376,7 +375,7 @@ public class HMaster extends HRegionServer implements MasterServices {
   volatile boolean serviceStarted = false;
 
   // Maximum time we should run balancer for
-  private final int maxBalancingTime;
+  private final int maxBlancingTime;
   // Maximum percent of regions in transition when balancing
   private final double maxRitPercent;
 
@@ -542,7 +541,7 @@ public class HMaster extends HRegionServer implements MasterServices {
       // preload table descriptor at startup
       this.preLoadTableDescriptors = conf.getBoolean("hbase.master.preload.tabledescriptors", true);
 
-      this.maxBalancingTime = getMaxBalancingTime();
+      this.maxBlancingTime = getMaxBalancingTime();
       this.maxRitPercent = conf.getDouble(HConstants.HBASE_MASTER_BALANCER_MAX_RIT_PERCENT,
           HConstants.DEFAULT_HBASE_MASTER_BALANCER_MAX_RIT_PERCENT);
 
@@ -562,7 +561,6 @@ public class HMaster extends HRegionServer implements MasterServices {
               " is not set - not publishing status");
         } else {
           clusterStatusPublisherChore = new ClusterStatusPublisher(this, conf, publisherClass);
-          LOG.debug("Created {}", this.clusterStatusPublisherChore);
           getChoreService().scheduleChore(clusterStatusPublisherChore);
         }
       }
@@ -688,6 +686,10 @@ public class HMaster extends HRegionServer implements MasterServices {
     return connector.getLocalPort();
   }
 
+  @Override
+  protected Function<TableDescriptorBuilder, TableDescriptorBuilder> getMetaTableObserver() {
+    return builder -> builder.setRegionReplication(conf.getInt(HConstants.META_REPLICAS_NUM, HConstants.DEFAULT_META_REPLICA_NUM));
+  }
   /**
    * For compatibility, if failed with regionserver credentials, try the master one
    */
@@ -1695,36 +1697,21 @@ public class HMaster extends HRegionServer implements MasterServices {
     return balance(false);
   }
 
-  /**
-   * Checks master state before initiating action over region topology.
-   * @param action the name of the action under consideration, for logging.
-   * @return {@code true} when the caller should exit early, {@code false} otherwise.
-   */
-  private boolean skipRegionManagementAction(final String action) {
-    if (!isInitialized()) {
-      LOG.debug("Master has not been initialized, don't run {}.", action);
-      return true;
-    }
-    if (this.getServerManager().isClusterShutdown()) {
-      LOG.info("Cluster is shutting down, don't run {}.", action);
-      return true;
-    }
-    if (isInMaintenanceMode()) {
-      LOG.info("Master is in maintenance mode, don't run {}.", action);
-      return true;
-    }
-    return false;
-  }
-
   public boolean balance(boolean force) throws IOException {
-    if (loadBalancerTracker == null || !loadBalancerTracker.isBalancerOn()) {
+    // if master not initialized, don't run balancer.
+    if (!isInitialized()) {
+      LOG.debug("Master has not been initialized, don't run balancer.");
       return false;
     }
-    if (skipRegionManagementAction("balancer")) {
+
+    if (isInMaintenanceMode()) {
+      LOG.info("Master is in maintenanceMode mode, don't run balancer.");
       return false;
     }
 
     synchronized (this.balancer) {
+      // If balance not true, don't run balancer.
+      if (!this.loadBalancerTracker.isBalancerOn()) return false;
         // Only allow one balance run at at time.
       if (this.assignmentManager.hasRegionsInTransition()) {
         List<RegionStateNode> regionsInTransition = assignmentManager.getRegionsInTransition();
@@ -1782,11 +1769,6 @@ public class HMaster extends HRegionServer implements MasterServices {
         }
       }
 
-      if (skipRegionManagementAction("balancer")) {
-        // make one last check that the cluster isn't shutting down before proceeding.
-        return false;
-      }
-
       List<RegionPlan> sucRPs = executeRegionPlansWithThrottling(plans);
 
       if (this.cpHost != null) {
@@ -1807,10 +1789,10 @@ public class HMaster extends HRegionServer implements MasterServices {
     List<RegionPlan> sucRPs = new ArrayList<>();
     int maxRegionsInTransition = getMaxRegionsInTransition();
     long balanceStartTime = System.currentTimeMillis();
-    long cutoffTime = balanceStartTime + this.maxBalancingTime;
+    long cutoffTime = balanceStartTime + this.maxBlancingTime;
     int rpCount = 0;  // number of RegionPlans balanced so far
     if (plans != null && !plans.isEmpty()) {
-      int balanceInterval = this.maxBalancingTime / plans.size();
+      int balanceInterval = this.maxBlancingTime / plans.size();
       LOG.info("Balancer plans size is " + plans.size() + ", the balance interval is "
           + balanceInterval + " ms, and the max number regions in transition is "
           + maxRegionsInTransition);
@@ -1828,18 +1810,18 @@ public class HMaster extends HRegionServer implements MasterServices {
         //rpCount records balance plans processed, does not care if a plan succeeds
         rpCount++;
 
-        if (this.maxBalancingTime > 0) {
+        if (this.maxBlancingTime > 0) {
           balanceThrottling(balanceStartTime + rpCount * balanceInterval, maxRegionsInTransition,
             cutoffTime);
         }
 
         // if performing next balance exceeds cutoff time, exit the loop
-        if (this.maxBalancingTime > 0 && rpCount < plans.size()
+        if (this.maxBlancingTime > 0 && rpCount < plans.size()
           && System.currentTimeMillis() > cutoffTime) {
           // TODO: After balance, there should not be a cutoff time (keeping it as
           // a security net for now)
           LOG.debug("No more balancing till next balance run; maxBalanceTime="
-              + this.maxBalancingTime);
+              + this.maxBlancingTime);
           break;
         }
       }
@@ -1861,26 +1843,36 @@ public class HMaster extends HRegionServer implements MasterServices {
    *    is globally disabled)
    */
   public boolean normalizeRegions() throws IOException {
-    if (regionNormalizerTracker == null || !regionNormalizerTracker.isNormalizerOn()) {
+    if (!isInitialized()) {
+      LOG.debug("Master has not been initialized, don't run region normalizer.");
+      return false;
+    }
+    if (this.getServerManager().isClusterShutdown()) {
+      LOG.info("Cluster is shutting down, don't run region normalizer.");
+      return false;
+    }
+    if (isInMaintenanceMode()) {
+      LOG.info("Master is in maintenance mode, don't run region normalizer.");
+      return false;
+    }
+    if (!this.regionNormalizerTracker.isNormalizerOn()) {
       LOG.debug("Region normalization is disabled, don't run region normalizer.");
-      return false;
-    }
-    if (skipRegionManagementAction("region normalizer")) {
-      return false;
-    }
-    if (assignmentManager.hasRegionsInTransition()) {
       return false;
     }
 
     synchronized (this.normalizer) {
       // Don't run the normalizer concurrently
-
       List<TableName> allEnabledTables = new ArrayList<>(
         this.tableStateManager.getTablesInStates(TableState.State.ENABLED));
 
       Collections.shuffle(allEnabledTables);
 
       for (TableName table : allEnabledTables) {
+        if (isInMaintenanceMode()) {
+          LOG.debug("Master is in maintenance mode, stop running region normalizer.");
+          return false;
+        }
+
         TableDescriptor tblDesc = getTableDescriptors().get(table);
         if (table.isSystemTable() || (tblDesc != null &&
             !tblDesc.isNormalizationEnabled())) {
@@ -1888,20 +1880,10 @@ public class HMaster extends HRegionServer implements MasterServices {
               + " table or doesn't have auto normalization turned on", table);
           continue;
         }
-
-        // make one last check that the cluster isn't shutting down before proceeding.
-        if (skipRegionManagementAction("region normalizer")) {
-          return false;
-        }
-
-        final List<NormalizationPlan> plans = this.normalizer.computePlanForTable(table);
-        if (CollectionUtils.isEmpty(plans)) {
-          return true;
-        }
-
-        try (final Admin admin = clusterConnection.getAdmin()) {
+        List<NormalizationPlan> plans = this.normalizer.computePlanForTable(table);
+        if (plans != null) {
           for (NormalizationPlan plan : plans) {
-            plan.execute(admin);
+            plan.execute(clusterConnection.getAdmin());
             if (plan.getType() == PlanType.SPLIT) {
               splitPlanCount++;
             } else if (plan.getType() == PlanType.MERGE) {

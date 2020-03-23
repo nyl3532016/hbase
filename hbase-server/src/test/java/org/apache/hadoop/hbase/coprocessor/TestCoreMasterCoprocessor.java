@@ -43,6 +43,7 @@ import org.junit.rules.TestName;
  */
 @Category({CoprocessorTests.class, SmallTests.class})
 public class TestCoreMasterCoprocessor {
+
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestCoreMasterCoprocessor.class);

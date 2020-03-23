@@ -228,10 +228,8 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
       }
     } else {
       ThreadPoolExecutor threadPool =
-        new ThreadPoolExecutor(1, 1, 0L,
-          TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(),
-            new ThreadFactoryBuilder().setNameFormat("AsyncFSWAL-%d-" + rootDir.toString()).
-              setDaemon(true).build());
+        new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(),
+            new ThreadFactoryBuilder().setNameFormat("AsyncFSWAL-%d").setDaemon(true).build());
       hasConsumerTask = () -> threadPool.getQueue().peek() == consumer;
       this.consumeExecutor = threadPool;
     }

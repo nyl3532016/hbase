@@ -154,6 +154,7 @@ public class TestHBCKSCP extends TestSCPBase {
     assertNotEquals(rsServerName, serverName);
     // Make sure no mention of old server post SCP.
     assertFalse(searchMeta(master, rsServerName));
+    assertFalse(master.getServerManager().getDeadServers().isDeadServer(rsServerName));
   }
 
   /**
