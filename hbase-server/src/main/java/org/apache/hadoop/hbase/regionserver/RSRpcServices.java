@@ -172,6 +172,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CloseRegion
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CloseRegionResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ExecuteProceduresRequest;
@@ -1667,7 +1669,27 @@ public class RSRpcServices extends AbstractRpcServices implements
   }
 
   @Override
-  @QosPriority(priority=HConstants.ADMIN_QOS)
+  public CompactionOffloadSwitchResponse compactionOffloadSwitch(RpcController controller,
+      CompactionOffloadSwitchRequest request) throws ServiceException {
+    try {
+      checkOpen();
+      requestCount.increment();
+      boolean prevState = regionServer.isCompactionOffloadEnabled();
+      CompactionOffloadSwitchResponse response =
+          CompactionOffloadSwitchResponse.newBuilder().setPrevState(prevState).build();
+      if (prevState == request.getEnabled()) {
+        // passed in requested state is same as current state. No action required
+        return response;
+      }
+      regionServer.switchCompactionOffload(request.getEnabled());
+      return response;
+    } catch (IOException ie) {
+      throw new ServiceException(ie);
+    }
+  }
+
+  @Override
+  @QosPriority(priority = HConstants.ADMIN_QOS)
   public GetOnlineRegionResponse getOnlineRegion(final RpcController controller,
       final GetOnlineRegionRequest request) throws ServiceException {
     try {

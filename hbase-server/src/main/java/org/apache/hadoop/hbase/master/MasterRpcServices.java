@@ -155,6 +155,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos.Rev
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos.RevokeResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
@@ -540,6 +542,28 @@ public class MasterRpcServices extends RSRpcServices implements
 
   boolean synchronousBalanceSwitch(final boolean b) throws IOException {
     return switchBalancer(b, BalanceSwitchMode.SYNC);
+  }
+
+  @Override
+  public CompactionOffloadSwitchResponse compactionOffloadSwitch(RpcController controller,
+    CompactionOffloadSwitchRequest request) throws ServiceException {
+    // write compaction offload switch to zk
+    CompactionOffloadSwitchResponse.Builder response =
+      CompactionOffloadSwitchResponse.newBuilder();
+    try {
+      master.checkInitialized();
+      boolean newValue = request.getEnabled();
+      boolean oldValue = master.isSplitOrMergeEnabled(MasterSwitchType.COMPACTION_OFFLOAD);
+      response.setPrevState(oldValue);
+      LOG.info("Set compaction offload enabled to {}", newValue);
+      master.getSplitOrMergeTracker().setSplitOrMergeEnabled(newValue,
+        MasterSwitchType.COMPACTION_OFFLOAD);
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    } catch (KeeperException e) {
+      throw new ServiceException(e);
+    }
+    return response.build();
   }
 
   /**

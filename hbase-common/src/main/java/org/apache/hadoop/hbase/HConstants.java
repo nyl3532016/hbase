@@ -1684,6 +1684,9 @@ public final class HConstants {
    */
   public static final int BATCH_ROWS_THRESHOLD_DEFAULT = 5000;
 
+  public final static String COMPACTION_OFFLOAD_ENABLED = "hbase.compaction.offload.enabled";
+  public final static boolean COMPACTION_OFFLOAD_ENABLED_DEFAULT = false;
+
   private HConstants() {
     // Can't be instantiated with this ctor.
   }

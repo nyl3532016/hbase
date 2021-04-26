@@ -88,6 +88,7 @@ import org.apache.hadoop.hbase.YouAreDeadException;
 import org.apache.hadoop.hbase.ZNodeClearer;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionUtils;
+import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.locking.EntityLock;
@@ -117,6 +118,7 @@ import org.apache.hadoop.hbase.log.HBaseMarkers;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.RegionState;
+import org.apache.hadoop.hbase.master.SplitOrMergeTracker;
 import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer;
 import org.apache.hadoop.hbase.mob.MobFileCache;
 import org.apache.hadoop.hbase.namequeues.NamedQueueRecorder;
@@ -281,6 +283,9 @@ public class HRegionServer extends AbstractServer implements
   private MemStoreFlusher cacheFlusher;
 
   private HeapMemoryManager hMemManager;
+
+  private volatile boolean compactionOffloadEnabled = false;
+  private SplitOrMergeTracker switchTracker;
 
   /**
    * Go here to get table descriptors.
@@ -613,6 +618,15 @@ public class HRegionServer extends AbstractServer implements
 
         clusterStatusTracker = new ClusterStatusTracker(zooKeeper, this);
         clusterStatusTracker.start();
+        if (conf.getBoolean(HConstants.COMPACTION_OFFLOAD_ENABLED,
+          HConstants.COMPACTION_OFFLOAD_ENABLED_DEFAULT)) {
+          switchTracker = new SplitOrMergeTracker(zooKeeper, conf, this);
+          switchTracker.start();
+          compactionOffloadEnabled =
+              switchTracker.isSplitOrMergeEnabled(MasterSwitchType.COMPACTION_OFFLOAD);
+          LOG.info("Set compaction offload enabled to {} from switchTracker",
+            compactionOffloadEnabled);
+        }
       } else {
         masterAddressTracker = null;
         clusterStatusTracker = null;
@@ -3665,6 +3679,18 @@ public class HRegionServer extends AbstractServer implements
       }
       throw ProtobufUtil.getRemoteException(se);
     }
+  }
+
+  @Override
+  public boolean isCompactionOffloadEnabled() {
+    return compactionOffloadEnabled;
+  }
+
+  public void switchCompactionOffload(boolean compactionOffloadEnabled) {
+    this.compactionOffloadEnabled =
+      compactionOffloadEnabled && conf.getBoolean(HConstants.COMPACTION_OFFLOAD_ENABLED,
+        HConstants.COMPACTION_OFFLOAD_ENABLED_DEFAULT);
+    LOG.info("Set compaction offload enabled to {}", this.compactionOffloadEnabled);
   }
 
   /**
