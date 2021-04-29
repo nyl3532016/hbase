@@ -22,9 +22,9 @@ module Shell
     # Switch compaction offload for a region server
     class CompactionOffloadSwitch < Command
       def help
-        <<-EOF
+        <<~EOF
           Turn the compaction offload on or off on regionservers. The setting will be lost on
-          restart of the server. Compaction offload can also be enabled/disabled by modifying 
+          restart of the server. Compaction offload can also be enabled/disabled by modifying
           configuration hbase.compaction.offload.enabled in hbase-site.xml.
           Examples:
             To enable compactions offload on all region servers

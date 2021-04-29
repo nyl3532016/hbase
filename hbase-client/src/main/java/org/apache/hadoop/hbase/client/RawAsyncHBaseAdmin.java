@@ -3273,14 +3273,14 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
             s.compactionSwitch(c, req, done), resp -> resp.getPrevState())).call();
   }
 
-  private CompletableFuture<Boolean> switchCompactionOffload(ServerName serverName, boolean onOrOff) {
-    return this
-      .<Boolean>newAdminCaller()
-      .serverName(serverName)
-      .action((controller, stub) -> this.<CompactionOffloadSwitchRequest, CompactionOffloadSwitchResponse,
-        Boolean>adminCall(controller, stub,
-        CompactionOffloadSwitchRequest.newBuilder().setEnabled(onOrOff).build(), (s, c, req, done) ->
-          s.compactionOffloadSwitch(c, req, done), resp -> resp.getPrevState())).call();
+  private CompletableFuture<Boolean> switchCompactionOffload(ServerName serverName,
+      boolean onOrOff) {
+    return this.<Boolean> newAdminCaller().serverName(serverName).action((controller, stub) -> this
+        .<CompactionOffloadSwitchRequest, CompactionOffloadSwitchResponse, Boolean> adminCall(
+          controller, stub, CompactionOffloadSwitchRequest.newBuilder().setEnabled(onOrOff).build(),
+          (s, c, req, done) -> s.compactionOffloadSwitch(c, req, done),
+          resp -> resp.getPrevState()))
+        .call();
   }
 
   @Override

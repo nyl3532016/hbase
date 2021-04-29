@@ -713,8 +713,8 @@ public interface Admin extends Abortable, Closeable {
    * @return Previous compaction offload states for region servers
    * @throws IOException if a remote or network exception occurs
    */
-  Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState, List<String> serverNamesList)
-    throws IOException;
+  Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState,
+      List<String> serverNamesList) throws IOException;
 
   /**
    * Compact all regions on the region server. Asynchronous operation in that this method requests
