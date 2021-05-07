@@ -50,7 +50,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.math.IntMath;
 
 /**
@@ -79,9 +78,9 @@ import org.apache.hbase.thirdparty.com.google.common.math.IntMath;
  * Notice that, you can use different root file system and WAL file system. Then the above directory
  * will be on two file systems, the root file system will have the data directory while the WAL
  * filesystem will have the WALs directory. The archived HFile will be moved to the global HFile
- * archived directory with the {@link MasterRegionParams#archivedWalSuffix()} suffix. The archived
+ * archived directory with the {@link MasterRegionParams#archivedHFileSuffix()} suffix. The archived
  * WAL will be moved to the global WAL archived directory with the
- * {@link MasterRegionParams#archivedHFileSuffix()} suffix.
+ * {@link MasterRegionParams#archivedWalSuffix()} suffix.
  */
 @InterfaceAudience.Private
 public final class MasterRegion {
@@ -96,10 +95,8 @@ public final class MasterRegion {
 
   private final WALFactory walFactory;
 
-  @VisibleForTesting
   final HRegion region;
 
-  @VisibleForTesting
   final MasterRegionFlusherAndCompactor flusherAndCompactor;
 
   private MasterRegionWALRoller walRoller;
@@ -141,17 +138,14 @@ public final class MasterRegion {
     return region.getScanner(scan);
   }
 
-  @VisibleForTesting
   public FlushResult flush(boolean force) throws IOException {
     return region.flush(force);
   }
 
-  @VisibleForTesting
   public void requestRollAll() {
     walRoller.requestRollAll();
   }
 
-  @VisibleForTesting
   public void waitUntilWalRollFinished() throws InterruptedException {
     walRoller.waitUntilWalRollFinished();
   }
@@ -301,7 +295,7 @@ public final class MasterRegion {
       params.archivedWalSuffix(), params.rollPeriodMs(), params.flushSize());
     walRoller.start();
 
-    WALFactory walFactory = new WALFactory(conf, server.getServerName().toString(), false);
+    WALFactory walFactory = new WALFactory(conf, server.getServerName().toString(), server, false);
     Path tableDir = CommonFSUtils.getTableDir(rootDir, td.getTableName());
     HRegion region;
     if (fs.exists(tableDir)) {

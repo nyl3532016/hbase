@@ -38,7 +38,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -77,7 +76,6 @@ import org.apache.hadoop.hbase.coprocessor.MasterObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.master.HMaster;
-import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.MasterRpcServices;
 import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.master.RegionState.State;
@@ -116,6 +114,7 @@ import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
@@ -900,7 +899,7 @@ public class TestSplitTransactionOnCluster {
     HMaster master = cluster.startMaster().getMaster();
     cluster.waitForActiveAndReadyMaster();
     // reset the connections
-    IOUtils.closeQuietly(admin);
+    Closeables.close(admin, true);
     TESTING_UTIL.invalidateConnection();
     admin = TESTING_UTIL.getAdmin();
     return master;
@@ -923,14 +922,7 @@ public class TestSplitTransactionOnCluster {
     // hbase:meta  We don't want hbase:meta replay polluting our test when we later crash
     // the table region serving server.
     int metaServerIndex = cluster.getServerWithMeta();
-    boolean tablesOnMaster = LoadBalancer.isTablesOnMaster(TESTING_UTIL.getConfiguration());
-    if (tablesOnMaster) {
-      // Need to check master is supposed to host meta... perhaps it is not.
-      throw new UnsupportedOperationException();
-      // TODO: assertTrue(metaServerIndex == -1); // meta is on master now
-    }
-    HRegionServer metaRegionServer = tablesOnMaster?
-      cluster.getMaster(): cluster.getRegionServer(metaServerIndex);
+    HRegionServer metaRegionServer = cluster.getRegionServer(metaServerIndex);
     int tableRegionIndex = cluster.getServerWith(hri.getRegionName());
     assertTrue(tableRegionIndex != -1);
     HRegionServer tableRegionServer = cluster.getRegionServer(tableRegionIndex);

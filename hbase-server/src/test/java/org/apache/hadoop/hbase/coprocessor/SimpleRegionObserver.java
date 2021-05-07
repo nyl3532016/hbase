@@ -745,6 +745,7 @@ public class SimpleRegionObserver implements RegionCoprocessor, RegionObserver {
     options.setMinVersions(TestRegionCoprocessorHost.MIN_VERSIONS);
     options.setKeepDeletedCells(KeepDeletedCells.TRUE);
     options.setTTL(TestRegionCoprocessorHost.TTL);
+    options.setTimeToPurgeDeletes(TestRegionCoprocessorHost.TIME_TO_PURGE_DELETES);
   }
 
 
@@ -777,12 +778,24 @@ public class SimpleRegionObserver implements RegionCoprocessor, RegionObserver {
     return ctPreBatchMutate.get() > 0;
   }
 
+  public int getPreBatchMutate() {
+    return ctPreBatchMutate.get();
+  }
+
   public boolean hadPostBatchMutate() {
     return ctPostBatchMutate.get() > 0;
   }
 
+  public int getPostBatchMutate() {
+    return ctPostBatchMutate.get();
+  }
+
   public boolean hadPostBatchMutateIndispensably() {
     return ctPostBatchMutateIndispensably.get() > 0;
+  }
+
+  public int getPostBatchMutateIndispensably() {
+    return ctPostBatchMutateIndispensably.get();
   }
 
   public boolean hadPostStartRegionOperation() {

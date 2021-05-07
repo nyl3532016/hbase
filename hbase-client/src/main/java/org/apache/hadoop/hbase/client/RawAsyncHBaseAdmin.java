@@ -100,7 +100,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.protobuf.Message;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
@@ -2385,56 +2384,60 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
    * @param regionNameOrEncodedRegionName region name or encoded region name
    * @return region location, wrapped by a {@link CompletableFuture}
    */
-  @VisibleForTesting
   CompletableFuture<HRegionLocation> getRegionLocation(byte[] regionNameOrEncodedRegionName) {
     if (regionNameOrEncodedRegionName == null) {
       return failedFuture(new IllegalArgumentException("Passed region name can't be null"));
     }
-    try {
-      CompletableFuture<Optional<HRegionLocation>> future;
-      if (RegionInfo.isEncodedRegionName(regionNameOrEncodedRegionName)) {
-        String encodedName = Bytes.toString(regionNameOrEncodedRegionName);
-        if (encodedName.length() < RegionInfo.MD5_HEX_LENGTH) {
-          // old format encodedName, should be meta region
-          future = connection.registry.getMetaRegionLocations()
-            .thenApply(locs -> Stream.of(locs.getRegionLocations())
-              .filter(loc -> loc.getRegion().getEncodedName().equals(encodedName)).findFirst());
-        } else {
-          future = ClientMetaTableAccessor.getRegionLocationWithEncodedName(metaTable,
-            regionNameOrEncodedRegionName);
-        }
+
+    CompletableFuture<Optional<HRegionLocation>> future;
+    if (RegionInfo.isEncodedRegionName(regionNameOrEncodedRegionName)) {
+      String encodedName = Bytes.toString(regionNameOrEncodedRegionName);
+      if (encodedName.length() < RegionInfo.MD5_HEX_LENGTH) {
+        // old format encodedName, should be meta region
+        future = connection.registry.getMetaRegionLocations()
+          .thenApply(locs -> Stream.of(locs.getRegionLocations())
+            .filter(loc -> loc.getRegion().getEncodedName().equals(encodedName)).findFirst());
       } else {
-        RegionInfo regionInfo =
-          CatalogFamilyFormat.parseRegionInfoFromRegionName(regionNameOrEncodedRegionName);
-        if (regionInfo.isMetaRegion()) {
-          future = connection.registry.getMetaRegionLocations()
-            .thenApply(locs -> Stream.of(locs.getRegionLocations())
-              .filter(loc -> loc.getRegion().getReplicaId() == regionInfo.getReplicaId())
-              .findFirst());
-        } else {
-          future =
-            ClientMetaTableAccessor.getRegionLocation(metaTable, regionNameOrEncodedRegionName);
-        }
+        future = ClientMetaTableAccessor.getRegionLocationWithEncodedName(metaTable,
+          regionNameOrEncodedRegionName);
+      }
+    } else {
+      // Not all regionNameOrEncodedRegionName here is going to be a valid region name,
+      // it needs to throw out IllegalArgumentException in case tableName is passed in.
+      RegionInfo regionInfo;
+      try {
+        regionInfo = CatalogFamilyFormat.parseRegionInfoFromRegionName(
+          regionNameOrEncodedRegionName);
+      } catch (IOException ioe) {
+        return failedFuture(new IllegalArgumentException(ioe.getMessage()));
       }
 
-      CompletableFuture<HRegionLocation> returnedFuture = new CompletableFuture<>();
-      addListener(future, (location, err) -> {
-        if (err != null) {
-          returnedFuture.completeExceptionally(err);
-          return;
-        }
-        if (!location.isPresent() || location.get().getRegion() == null) {
-          returnedFuture.completeExceptionally(
-            new UnknownRegionException("Invalid region name or encoded region name: " +
-              Bytes.toStringBinary(regionNameOrEncodedRegionName)));
-        } else {
-          returnedFuture.complete(location.get());
-        }
-      });
-      return returnedFuture;
-    } catch (IOException e) {
-      return failedFuture(e);
+      if (regionInfo.isMetaRegion()) {
+        future = connection.registry.getMetaRegionLocations()
+          .thenApply(locs -> Stream.of(locs.getRegionLocations())
+            .filter(loc -> loc.getRegion().getReplicaId() == regionInfo.getReplicaId())
+            .findFirst());
+      } else {
+        future =
+          ClientMetaTableAccessor.getRegionLocation(metaTable, regionNameOrEncodedRegionName);
+      }
     }
+
+    CompletableFuture<HRegionLocation> returnedFuture = new CompletableFuture<>();
+    addListener(future, (location, err) -> {
+      if (err != null) {
+        returnedFuture.completeExceptionally(err);
+        return;
+      }
+      if (!location.isPresent() || location.get().getRegion() == null) {
+        returnedFuture.completeExceptionally(
+          new UnknownRegionException("Invalid region name or encoded region name: " +
+            Bytes.toStringBinary(regionNameOrEncodedRegionName)));
+      } else {
+        returnedFuture.complete(location.get());
+      }
+    });
+    return returnedFuture;
   }
 
   /**
@@ -4199,6 +4202,15 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
       .call();
   }
 
+  private CompletableFuture<List<LogEntry>> getBalancerRejections(final int limit) {
+    return this.<List<LogEntry>>newMasterCaller()
+      .action((controller, stub) ->
+        this.call(controller, stub,
+          ProtobufUtil.toBalancerRejectionRequest(limit),
+          MasterService.Interface::getLogEntries, ProtobufUtil::toBalancerRejectionResponse))
+      .call();
+  }
+
   @Override
   public CompletableFuture<List<LogEntry>> getLogEntries(Set<ServerName> serverNames,
       String logType, ServerType serverType, int limit,
@@ -4206,19 +4218,28 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
     if (logType == null || serverType == null) {
       throw new IllegalArgumentException("logType and/or serverType cannot be empty");
     }
-    if (logType.equals("SLOW_LOG") || logType.equals("LARGE_LOG")) {
-      if (ServerType.MASTER.equals(serverType)) {
-        throw new IllegalArgumentException("Slow/Large logs are not maintained by HMaster");
-      }
-      return getSlowLogResponses(filterParams, serverNames, limit, logType);
-    } else if (logType.equals("BALANCER_DECISION")) {
-      if (ServerType.REGION_SERVER.equals(serverType)) {
-        throw new IllegalArgumentException(
-          "Balancer Decision logs are not maintained by HRegionServer");
-      }
-      return getBalancerDecisions(limit);
+    switch (logType){
+      case "SLOW_LOG":
+      case "LARGE_LOG":
+        if (ServerType.MASTER.equals(serverType)) {
+          throw new IllegalArgumentException("Slow/Large logs are not maintained by HMaster");
+        }
+        return getSlowLogResponses(filterParams, serverNames, limit, logType);
+      case "BALANCER_DECISION":
+        if (ServerType.REGION_SERVER.equals(serverType)) {
+          throw new IllegalArgumentException(
+            "Balancer Decision logs are not maintained by HRegionServer");
+        }
+        return getBalancerDecisions(limit);
+      case "BALANCER_REJECTION":
+        if (ServerType.REGION_SERVER.equals(serverType)) {
+          throw new IllegalArgumentException(
+            "Balancer Rejection logs are not maintained by HRegionServer");
+        }
+        return getBalancerRejections(limit);
+      default:
+        return CompletableFuture.completedFuture(Collections.emptyList());
     }
-    return CompletableFuture.completedFuture(Collections.emptyList());
   }
 
 }

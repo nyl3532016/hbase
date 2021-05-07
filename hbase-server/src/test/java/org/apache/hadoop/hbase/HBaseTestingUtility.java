@@ -118,7 +118,6 @@ import org.apache.hadoop.hbase.security.HBaseKerberosUtils;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.visibility.VisibilityLabelsCache;
-import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -604,8 +603,6 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     Log4jUtils.setLogLevel(org.apache.hadoop.metrics2.impl.MetricsSystemImpl.class.getName(),
       "ERROR");
 
-    TraceUtil.initTracer(conf);
-
     this.dfsCluster = new MiniDFSCluster(0, this.conf, servers, true, true,
         true, null, racks, hosts, null);
 
@@ -639,7 +636,6 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
    * This is used before starting HDFS and map-reduce mini-clusters Run something like the below to
    * check for the likes of '/tmp' references -- i.e. references outside of the test data dir -- in
    * the conf.
-   *
    * <pre>
    * Configuration conf = TEST_UTIL.getConfiguration();
    * for (Iterator&lt;Map.Entry&lt;String, String&gt;&gt; i = conf.iterator(); i.hasNext();) {
@@ -1113,7 +1109,6 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     Log4jUtils.setLogLevel(org.apache.hadoop.hbase.ScheduledChore.class.getName(), "INFO");
 
     Configuration c = new Configuration(this.conf);
-    TraceUtil.initTracer(c);
     this.hbaseCluster = new MiniHBaseCluster(c, option.getNumMasters(),
       option.getNumAlwaysStandByMasters(), option.getNumRegionServers(), option.getRsPorts(),
       option.getMasterClass(), option.getRsClass());
@@ -1846,11 +1841,9 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
    */
   public static void setReplicas(Admin admin, TableName table, int replicaCount)
     throws IOException, InterruptedException {
-    admin.disableTable(table);
     TableDescriptor desc = TableDescriptorBuilder.newBuilder(admin.getDescriptor(table))
       .setRegionReplication(replicaCount).build();
     admin.modifyTable(desc);
-    admin.enableTable(table);
   }
 
   /**
@@ -1981,14 +1974,15 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
   /**
    * Create an HRegion that writes to the local tmp dirs with specified wal
    * @param info regioninfo
+   * @param conf configuration
    * @param desc table descriptor
    * @param wal wal for this region.
    * @return created hregion
    * @throws IOException
    */
-  public HRegion createLocalHRegion(RegionInfo info, TableDescriptor desc, WAL wal)
-      throws IOException {
-    return HRegion.createHRegion(info, getDataTestDir(), getConfiguration(), desc, wal);
+  public HRegion createLocalHRegion(RegionInfo info, Configuration conf, TableDescriptor desc,
+      WAL wal) throws IOException {
+    return HRegion.createHRegion(info, getDataTestDir(), conf, desc, wal);
   }
 
   /**
@@ -2002,14 +1996,15 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
    * @throws IOException
    */
   public HRegion createLocalHRegion(TableName tableName, byte[] startKey, byte[] stopKey,
-      boolean isReadOnly, Durability durability, WAL wal, byte[]... families) throws IOException {
-    return createLocalHRegionWithInMemoryFlags(tableName,startKey, stopKey, isReadOnly,
+      Configuration conf, boolean isReadOnly, Durability durability, WAL wal, byte[]... families)
+      throws IOException {
+    return createLocalHRegionWithInMemoryFlags(tableName, startKey, stopKey, conf, isReadOnly,
         durability, wal, null, families);
   }
 
   public HRegion createLocalHRegionWithInMemoryFlags(TableName tableName, byte[] startKey,
-    byte[] stopKey, boolean isReadOnly, Durability durability, WAL wal, boolean[] compactedMemStore,
-    byte[]... families) throws IOException {
+    byte[] stopKey, Configuration conf, boolean isReadOnly, Durability durability, WAL wal,
+    boolean[] compactedMemStore, byte[]... families) throws IOException {
     TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
     builder.setReadOnly(isReadOnly);
     int i = 0;
@@ -2029,7 +2024,7 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     builder.setDurability(durability);
     RegionInfo info =
       RegionInfoBuilder.newBuilder(tableName).setStartKey(startKey).setEndKey(stopKey).build();
-    return createLocalHRegion(info, builder.build(), wal);
+    return createLocalHRegion(info, conf, builder.build(), wal);
   }
 
   //
@@ -2489,7 +2484,7 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
           .setStartKey(startKeys[i])
           .setEndKey(startKeys[j])
           .build();
-      MetaTableAccessor.addRegionToMeta(getConnection(), hri);
+      MetaTableAccessor.addRegionsToMeta(getConnection(), Collections.singletonList(hri), 1);
       newRegions.add(hri);
     }
 
@@ -2987,7 +2982,7 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
 
   /**
    * Get a shared Connection to the cluster.
-   * this method is threadsafe.
+   * this method is thread safe.
    * @return A Connection that can be shared. Don't close. Will be closed on shutdown of cluster.
    */
   public Connection getConnection() throws IOException {
@@ -2995,8 +2990,18 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
   }
 
   /**
+   * Get a assigned Connection to the cluster.
+   * this method is thread safe.
+   * @param user assigned user
+   * @return A Connection with assigned user.
+   */
+  public Connection getConnection(User user) throws IOException {
+    return getAsyncConnection(user).toConnection();
+  }
+
+  /**
    * Get a shared AsyncClusterConnection to the cluster.
-   * this method is threadsafe.
+   * this method is thread safe.
    * @return An AsyncClusterConnection that can be shared. Don't close. Will be closed on shutdown of cluster.
    */
   public AsyncClusterConnection getAsyncConnection() throws IOException {
@@ -3005,7 +3010,7 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
         if (connection == null) {
           try {
             User user = UserProvider.instantiate(conf).getCurrent();
-            connection = ClusterConnectionFactory.createAsyncClusterConnection(conf, null, user);
+            connection = getAsyncConnection(user);
           } catch(IOException ioe) {
             throw new UncheckedIOException("Failed to create connection", ioe);
           }
@@ -3015,6 +3020,16 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     } catch (UncheckedIOException exception) {
       throw exception.getCause();
     }
+  }
+
+  /**
+   * Get a assigned AsyncClusterConnection to the cluster.
+   * this method is thread safe.
+   * @param user assigned user
+   * @return An AsyncClusterConnection with assigned user.
+   */
+  public AsyncClusterConnection getAsyncConnection(User user) throws IOException {
+    return ClusterConnectionFactory.createAsyncClusterConnection(conf, null, user);
   }
 
   public void closeConnection() throws IOException {

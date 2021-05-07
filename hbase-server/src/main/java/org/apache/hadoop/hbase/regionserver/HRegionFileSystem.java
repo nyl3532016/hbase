@@ -54,7 +54,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
@@ -75,7 +74,7 @@ public class HRegionFileSystem {
   public static final String REGION_SPLITS_DIR = ".splits";
 
   /** Temporary subdirectory of the region directory used for compaction output. */
-  @VisibleForTesting static final String REGION_TEMP_DIR = ".tmp";
+  static final String REGION_TEMP_DIR = ".tmp";
 
   private final RegionInfo regionInfo;
   //regionInfo for interacting with FS (getting encodedName, etc)
@@ -164,6 +163,28 @@ public class HRegionFileSystem {
    */
   public Path getStoreDir(final String familyName) {
     return new Path(this.getRegionDir(), familyName);
+  }
+
+  /**
+   * @param tabledir {@link Path} to where the table is being stored
+   * @param hri {@link RegionInfo} for the region.
+   * @param family {@link ColumnFamilyDescriptor} describing the column family
+   * @return Path to family/Store home directory.
+   */
+  public static Path getStoreHomedir(final Path tabledir,
+    final RegionInfo hri, final byte[] family) {
+    return getStoreHomedir(tabledir, hri.getEncodedName(), family);
+  }
+
+  /**
+   * @param tabledir {@link Path} to where the table is being stored
+   * @param encodedName Encoded region name.
+   * @param family {@link ColumnFamilyDescriptor} describing the column family
+   * @return Path to family/Store home directory.
+   */
+  public static Path getStoreHomedir(final Path tabledir,
+    final String encodedName, final byte[] family) {
+    return new Path(tabledir, new Path(encodedName, Bytes.toString(family)));
   }
 
   /**

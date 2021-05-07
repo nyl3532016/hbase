@@ -112,6 +112,8 @@ public class TestRSGroupsWithACL extends SecureTestUtil {
     TEST_UTIL.startMiniCluster();
     // Wait for the ACL table to become available
     TEST_UTIL.waitUntilAllRegionsAssigned(PermissionStorage.ACL_TABLE_NAME);
+    TEST_UTIL.waitUntilAllRegionsAssigned(RSGroupInfoManagerImpl.RSGROUP_TABLE_NAME);
+    TEST_UTIL.waitUntilNoRegionsInTransition();
 
     // create a set of test users
     SUPERUSER = User.createUserForTesting(conf, "admin", new String[] { "supergroup" });
@@ -130,6 +132,9 @@ public class TestRSGroupsWithACL extends SecureTestUtil {
         User.createUserForTesting(conf, "user_group_read", new String[] { GROUP_READ });
     USER_GROUP_WRITE =
         User.createUserForTesting(conf, "user_group_write", new String[] { GROUP_WRITE });
+
+    // Grant table creation permission to USER_OWNER
+    grantGlobal(TEST_UTIL, USER_OWNER.getShortName(), Permission.Action.CREATE);
 
     systemUserConnection = TEST_UTIL.getConnection();
     setUpTableAndUserPermissions();
@@ -156,8 +161,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil {
     ColumnFamilyDescriptorBuilder cfd = ColumnFamilyDescriptorBuilder.newBuilder(TEST_FAMILY);
     cfd.setMaxVersions(100);
     tableBuilder.setColumnFamily(cfd.build());
-    tableBuilder.setValue(TableDescriptorBuilder.OWNER, USER_OWNER.getShortName());
-    createTable(TEST_UTIL, tableBuilder.build(), new byte[][] { Bytes.toBytes("s") });
+    createTable(TEST_UTIL, USER_OWNER, tableBuilder.build(), new byte[][] { Bytes.toBytes("s") });
 
     // Set up initial grants
     grantGlobal(TEST_UTIL, USER_ADMIN.getShortName(), Permission.Action.ADMIN,

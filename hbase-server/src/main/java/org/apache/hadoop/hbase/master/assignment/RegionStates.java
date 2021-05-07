@@ -45,8 +45,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 /**
  * RegionStates contains a set of Maps that describes the in-memory state of the AM, with
  * the regions available in the system, the region in transition, the offline regions and
@@ -115,7 +113,6 @@ public class RegionStates {
     serverMap.clear();
   }
 
-  @VisibleForTesting
   public boolean isRegionInRegionStates(final RegionInfo hri) {
     return (regionsMap.containsKey(hri.getRegionName()) || regionInTransition.containsKey(hri)
         || regionOffline.containsKey(hri));
@@ -124,7 +121,6 @@ public class RegionStates {
   // ==========================================================================
   //  RegionStateNode helpers
   // ==========================================================================
-  @VisibleForTesting
   RegionStateNode createRegionStateNode(RegionInfo regionInfo) {
     synchronized (regionsMapLock) {
       RegionStateNode node = regionsMap.computeIfAbsent(regionInfo.getRegionName(),
@@ -173,7 +169,7 @@ public class RegionStates {
     regionInfos.forEach(this::deleteRegion);
   }
 
-  ArrayList<RegionStateNode> getTableRegionStateNodes(final TableName tableName) {
+  List<RegionStateNode> getTableRegionStateNodes(final TableName tableName) {
     final ArrayList<RegionStateNode> regions = new ArrayList<RegionStateNode>();
     for (RegionStateNode node: regionsMap.tailMap(tableName.getName()).values()) {
       if (!node.getTable().equals(tableName)) break;
@@ -241,8 +237,10 @@ public class RegionStates {
   /**
    * @return Return online regions of table; does not include OFFLINE or SPLITTING regions.
    */
-  public List<RegionInfo> getRegionsOfTable(final TableName table) {
-    return getRegionsOfTable(table, false);
+  public List<RegionInfo> getRegionsOfTable(TableName table) {
+    return getRegionsOfTable(table,
+      regionNode -> !regionNode.isInState(State.OFFLINE, State.SPLIT) &&
+        !regionNode.getRegionInfo().isSplitParent());
   }
 
   private HRegionLocation createRegionForReopen(RegionStateNode node) {
@@ -346,16 +344,34 @@ public class RegionStates {
   }
 
   /**
-   * @return Return online regions of table; does not include OFFLINE or SPLITTING regions.
+   * Get the regions for enabling a table.
+   * <p/>
+   * Here we want the EnableTableProcedure to be more robust and can be used to fix some nasty
+   * states, so the checks in this method will be a bit strange. In general, a region can only be
+   * offline when it is split, for merging we will just delete the parent regions, but with HBCK we
+   * may force update the state of a region to fix some nasty bugs, so in this method we will try to
+   * bring the offline regions back if it is not split. That's why we only check for split state
+   * here.
    */
-  public List<RegionInfo> getRegionsOfTable(TableName table, boolean offline) {
-    return getRegionsOfTable(table, state -> include(state, offline));
+  public List<RegionInfo> getRegionsOfTableForEnabling(TableName table) {
+    return getRegionsOfTable(table,
+      regionNode -> !regionNode.isInState(State.SPLIT) && !regionNode.getRegionInfo().isSplit());
   }
 
   /**
-   * @return Return the regions of the table; does not include OFFLINE unless you set
-   *         <code>offline</code> to true. Does not include regions that are in the
-   *         {@link State#SPLIT} state.
+   * Get the regions for deleting a table.
+   * <p/>
+   * Here we need to return all the regions irrespective of the states in order to archive them
+   * all. This is because if we don't archive OFFLINE/SPLIT regions and if a snapshot or a cloned
+   * table references to the regions, we will lose the data of the regions.
+   */
+  public List<RegionInfo> getRegionsOfTableForDeleting(TableName table) {
+    return getTableRegionStateNodes(table).stream().map(RegionStateNode::getRegionInfo)
+      .collect(Collectors.toList());
+  }
+
+  /**
+   * @return Return the regions of the table and filter them.
    */
   private List<RegionInfo> getRegionsOfTable(TableName table, Predicate<RegionStateNode> filter) {
     return getTableRegionStateNodes(table).stream().filter(filter).map(n -> n.getRegionInfo())
@@ -368,7 +384,7 @@ public class RegionStates {
    * @return True if we should include the <code>node</code> (do not include
    * if split or offline unless <code>offline</code> is set to true.
    */
-  boolean include(final RegionStateNode node, final boolean offline) {
+  private boolean include(final RegionStateNode node, final boolean offline) {
     if (LOG.isTraceEnabled()) {
       LOG.trace("WORKING ON " + node + " " + node.getRegionInfo());
     }
@@ -555,23 +571,37 @@ public class RegionStates {
    * wants to iterate this exported list.  We need to synchronize on regions
    * since all access to this.servers is under a lock on this.regions.
    *
-   * @return A clone of current assignments.
+   * @return A clone of current open or opening assignments.
    */
   public Map<TableName, Map<ServerName, List<RegionInfo>>> getAssignmentsForBalancer(
       TableStateManager tableStateManager, List<ServerName> onlineServers) {
     final Map<TableName, Map<ServerName, List<RegionInfo>>> result = new HashMap<>();
     for (RegionStateNode node : regionsMap.values()) {
+      // DisableTableProcedure first sets the table state to DISABLED and then force unassigns
+      // the regions in a loop. The balancer should ignore all regions for tables in DISABLED
+      // state because even if still currently open we expect them to be offlined very soon.
       if (isTableDisabled(tableStateManager, node.getTable())) {
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("Ignoring {} because table is disabled", node);
+        }
         continue;
       }
-      if (node.getRegionInfo().isSplitParent()) {
+      // When balancing, we are only interested in OPEN or OPENING regions. These can be
+      // expected to remain online until the next balancer iteration or unless the balancer
+      // decides to move it. Regions in other states are not eligible for balancing, because
+      // they are closing, splitting, merging, or otherwise already in transition.
+      if (!node.isInState(State.OPEN, State.OPENING)) {
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("Ignoring {} because region is not OPEN or OPENING", node);
+        }
         continue;
       }
       Map<ServerName, List<RegionInfo>> tableResult =
           result.computeIfAbsent(node.getTable(), t -> new HashMap<>());
       final ServerName serverName = node.getRegionLocation();
+      // A region in ONLINE or OPENING state should have a location.
       if (serverName == null) {
-        LOG.info("Skipping, no server for " + node);
+        LOG.warn("Skipping, no server for {}", node);
         continue;
       }
       List<RegionInfo> serverResult =
@@ -744,7 +774,6 @@ public class RegionStates {
   /**
    * @return Pertinent ServerStateNode or NULL if none found (Do not make modifications).
    */
-  @VisibleForTesting
   public ServerStateNode getServerNode(final ServerName serverName) {
     return serverMap.get(serverName);
   }

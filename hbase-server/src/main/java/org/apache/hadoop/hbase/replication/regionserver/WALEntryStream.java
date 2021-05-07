@@ -63,7 +63,8 @@ class WALEntryStream implements Closeable {
   private long currentPositionOfEntry = 0;
   // position after reading current entry
   private long currentPositionOfReader = 0;
-  private final PriorityBlockingQueue<Path> logQueue;
+  private final ReplicationSourceLogQueue logQueue;
+  private final String walGroupId;
   private final FileSystem fs;
   private final Configuration conf;
   private final WALFileLengthProvider walFileLengthProvider;
@@ -79,11 +80,11 @@ class WALEntryStream implements Closeable {
    * @param walFileLengthProvider provides the length of the WAL file
    * @param serverName the server name which all WALs belong to
    * @param metrics the replication metrics
-   * @throws IOException
+   * @throws IOException throw IO exception from stream
    */
-  public WALEntryStream(PriorityBlockingQueue<Path> logQueue, Configuration conf,
+  public WALEntryStream(ReplicationSourceLogQueue logQueue, Configuration conf,
       long startPosition, WALFileLengthProvider walFileLengthProvider, ServerName serverName,
-      MetricsSource metrics) throws IOException {
+      MetricsSource metrics, String walGroupId) throws IOException {
     this.logQueue = logQueue;
     this.fs = CommonFSUtils.getWALFileSystem(conf);
     this.conf = conf;
@@ -91,6 +92,7 @@ class WALEntryStream implements Closeable {
     this.walFileLengthProvider = walFileLengthProvider;
     this.serverName = serverName;
     this.metrics = metrics;
+    this.walGroupId = walGroupId;
   }
 
   /**
@@ -174,7 +176,7 @@ class WALEntryStream implements Closeable {
   private void tryAdvanceEntry() throws IOException {
     if (checkReader()) {
       boolean beingWritten = readNextEntryAndRecordReaderPosition();
-      LOG.trace("reading wal file {}. Current open for write: {}", this.currentPath, beingWritten);
+      LOG.trace("Reading WAL {}; currently open for write={}", this.currentPath, beingWritten);
       if (currentEntry == null && !beingWritten) {
         // no more entries in this log file, and the file is already closed, i.e, rolled
         // Before dequeueing, we should always get one more attempt at reading.
@@ -222,7 +224,7 @@ class WALEntryStream implements Closeable {
         if (currentPositionOfReader < stat.getLen()) {
           final long skippedBytes = stat.getLen() - currentPositionOfReader;
           LOG.debug(
-            "Reached the end of WAL file '{}'. It was not closed cleanly," +
+            "Reached the end of WAL {}. It was not closed cleanly," +
               " so we did not parse {} bytes of data. This is normally ok.",
             currentPath, skippedBytes);
           metrics.incrUncleanlyClosedWALs();
@@ -230,7 +232,7 @@ class WALEntryStream implements Closeable {
         }
       } else if (currentPositionOfReader + trailerSize < stat.getLen()) {
         LOG.warn(
-          "Processing end of WAL file '{}'. At position {}, which is too far away from" +
+          "Processing end of WAL {} at position {}, which is too far away from" +
             " reported file length {}. Restarting WAL reading (see HBASE-15983 for details). {}",
           currentPath, currentPositionOfReader, stat.getLen(), getCurrentPathStat());
         setPosition(0);
@@ -241,7 +243,7 @@ class WALEntryStream implements Closeable {
       }
     }
     if (LOG.isTraceEnabled()) {
-      LOG.trace("Reached the end of log " + this.currentPath + ", and the length of the file is " +
+      LOG.trace("Reached the end of " + this.currentPath + " and length of the file is " +
         (stat == null ? "N/A" : stat.getLen()));
     }
     metrics.incrCompletedWAL();
@@ -249,11 +251,11 @@ class WALEntryStream implements Closeable {
   }
 
   private void dequeueCurrentLog() throws IOException {
-    LOG.debug("Reached the end of log {}", currentPath);
+    LOG.debug("EOF, closing {}", currentPath);
     closeReader();
-    logQueue.remove();
+    logQueue.remove(walGroupId);
+    setCurrentPath(null);
     setPosition(0);
-    metrics.decrSizeOfLogQueue();
   }
 
   /**
@@ -264,7 +266,7 @@ class WALEntryStream implements Closeable {
     long readerPos = reader.getPosition();
     OptionalLong fileLength = walFileLengthProvider.getLogFileSizeIfBeingWritten(currentPath);
     if (fileLength.isPresent() && readerPos > fileLength.getAsLong()) {
-      // see HBASE-14004, for AsyncFSWAL which uses fan-out, it is possible that we read uncommitted
+      // See HBASE-14004, for AsyncFSWAL which uses fan-out, it is possible that we read uncommitted
       // data, so we need to make sure that we do not read beyond the committed file length.
       if (LOG.isDebugEnabled()) {
         LOG.debug("The provider tells us the valid length for " + currentPath + " is " +
@@ -300,7 +302,8 @@ class WALEntryStream implements Closeable {
 
   // open a reader on the next log in queue
   private boolean openNextLog() throws IOException {
-    Path nextPath = logQueue.peek();
+    PriorityBlockingQueue<Path> queue = logQueue.getQueue(walGroupId);
+    Path nextPath = queue.peek();
     if (nextPath != null) {
       openReader(nextPath);
       if (reader != null) {
@@ -365,7 +368,9 @@ class WALEntryStream implements Closeable {
       handleFileNotFound(path, fnfe);
     }  catch (RemoteException re) {
       IOException ioe = re.unwrapRemoteException(FileNotFoundException.class);
-      if (!(ioe instanceof FileNotFoundException)) throw ioe;
+      if (!(ioe instanceof FileNotFoundException)) {
+        throw ioe;
+      }
       handleFileNotFound(path, (FileNotFoundException)ioe);
     } catch (LeaseNotRecoveredException lnre) {
       // HBASE-15019 the WAL was not closed due to some hiccup.

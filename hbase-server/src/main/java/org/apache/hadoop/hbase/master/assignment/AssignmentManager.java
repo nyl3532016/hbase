@@ -45,6 +45,7 @@ import org.apache.hadoop.hbase.client.DoNotRetryRegionException;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.RegionStatesCount;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -84,8 +85,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProtos.RegionStateTransition;
@@ -180,7 +179,6 @@ public class AssignmentManager {
     this(master, new RegionStateStore(master));
   }
 
-  @VisibleForTesting
   AssignmentManager(final MasterServices master, final RegionStateStore stateStore) {
     this.master = master;
     this.regionStateStore = stateStore;
@@ -228,13 +226,18 @@ public class AssignmentManager {
     // load meta region state
     ZKWatcher zkw = master.getZooKeeper();
     // it could be null in some tests
-    if (zkw != null) {
+    if (zkw == null) {
+      return;
+    }
+    List<String> metaZNodes = zkw.getMetaReplicaNodes();
+    LOG.debug("hbase:meta replica znodes: {}", metaZNodes);
+    for (String metaZNode : metaZNodes) {
+      int replicaId = zkw.getZNodePaths().getMetaReplicaIdFromZNode(metaZNode);
       // here we are still in the early steps of active master startup. There is only one thread(us)
       // can access AssignmentManager and create region node, so here we do not need to lock the
       // region node.
-      RegionState regionState = MetaTableLocator.getMetaRegionState(zkw);
-      RegionStateNode regionNode =
-        regionStates.getOrCreateRegionStateNode(RegionInfoBuilder.FIRST_META_REGIONINFO);
+      RegionState regionState = MetaTableLocator.getMetaRegionState(zkw, replicaId);
+      RegionStateNode regionNode = regionStates.getOrCreateRegionStateNode(regionState.getRegion());
       regionNode.setRegionLocation(regionState.getServerName());
       regionNode.setState(regionState.getState());
       if (regionNode.getProcedure() != null) {
@@ -243,7 +246,10 @@ public class AssignmentManager {
       if (regionState.getServerName() != null) {
         regionStates.addRegionToServer(regionNode);
       }
-      setMetaAssigned(regionState.getRegion(), regionState.getState() == State.OPEN);
+      if (RegionReplicaUtil.isDefaultReplica(replicaId)) {
+        setMetaAssigned(regionState.getRegion(), regionState.getState() == State.OPEN);
+      }
+      LOG.debug("Loaded hbase:meta {}", regionNode);
     }
   }
 
@@ -386,15 +392,15 @@ public class AssignmentManager {
   // ============================================================================================
   //  Table State Manager helpers
   // ============================================================================================
-  TableStateManager getTableStateManager() {
+  private TableStateManager getTableStateManager() {
     return master.getTableStateManager();
   }
 
-  public boolean isTableEnabled(final TableName tableName) {
+  private boolean isTableEnabled(final TableName tableName) {
     return getTableStateManager().isTableState(tableName, TableState.State.ENABLED);
   }
 
-  public boolean isTableDisabled(final TableName tableName) {
+  private boolean isTableDisabled(final TableName tableName) {
     return getTableStateManager().isTableState(tableName,
       TableState.State.DISABLED, TableState.State.DISABLING);
   }
@@ -496,8 +502,15 @@ public class AssignmentManager {
     return metaLoadEvent.suspendIfNotReady(proc);
   }
 
-  @VisibleForTesting
-  void wakeMetaLoadedEvent() {
+  /**
+   * This method will be called in master initialization method after calling
+   * {@link #processOfflineRegions()}, as in processOfflineRegions we will generate assign
+   * procedures for offline regions, which may be conflict with creating table.
+   * <p/>
+   * This is a bit dirty, should be reconsidered after we decide whether to keep the
+   * {@link #processOfflineRegions()} method.
+   */
+  public void wakeMetaLoadedEvent() {
     metaLoadEvent.wake(getProcedureScheduler());
     assert isMetaLoaded() : "expected meta to be loaded";
   }
@@ -719,6 +732,17 @@ public class AssignmentManager {
     return ProcedureSyncWait.submitProcedure(master.getMasterProcedureExecutor(), proc);
   }
 
+  public Future<byte[]> balance(RegionPlan regionPlan) throws HBaseIOException {
+    ServerName current =
+      this.getRegionStates().getRegionAssignments().get(regionPlan.getRegionInfo());
+    if (!current.equals(regionPlan.getSource())) {
+      LOG.debug("Skip region plan {}, source server not match, current region location is {}",
+        regionPlan, current);
+      return null;
+    }
+    return moveAsync(regionPlan);
+  }
+
   // ============================================================================================
   //  RegionTransition procedures helpers
   // ============================================================================================
@@ -766,7 +790,6 @@ public class AssignmentManager {
     return createRoundRobinAssignProcedures(hris, null);
   }
 
-  @VisibleForTesting
   static int compare(TransitRegionStateProcedure left, TransitRegionStateProcedure right) {
     if (left.getRegion().isMetaRegion()) {
       if (right.getRegion().isMetaRegion()) {
@@ -870,32 +893,52 @@ public class AssignmentManager {
       .sorted(AssignmentManager::compare).toArray(TransitRegionStateProcedure[]::new);
   }
 
+  // for creating unassign TRSP when disabling a table or closing excess region replicas
+  private TransitRegionStateProcedure forceCreateUnssignProcedure(RegionStateNode regionNode) {
+    regionNode.lock();
+    try {
+      if (regionNode.isInState(State.OFFLINE, State.CLOSED, State.SPLIT)) {
+        return null;
+      }
+      // in general, a split parent should be in CLOSED or SPLIT state, but anyway, let's check it
+      // here for safety
+      if (regionNode.getRegionInfo().isSplit()) {
+        LOG.warn("{} is a split parent but not in CLOSED or SPLIT state", regionNode);
+        return null;
+      }
+      // As in DisableTableProcedure or ModifyTableProcedure, we will hold the xlock for table, so
+      // we can make sure that this procedure has not been executed yet, as TRSP will hold the
+      // shared lock for table all the time. So here we will unset it and when it is actually
+      // executed, it will find that the attach procedure is not itself and quit immediately.
+      if (regionNode.getProcedure() != null) {
+        regionNode.unsetProcedure(regionNode.getProcedure());
+      }
+      return regionNode.setProcedure(TransitRegionStateProcedure.unassign(getProcedureEnvironment(),
+        regionNode.getRegionInfo()));
+    } finally {
+      regionNode.unlock();
+    }
+  }
+
   /**
    * Called by DisableTableProcedure to unassign all the regions for a table.
    */
   public TransitRegionStateProcedure[] createUnassignProceduresForDisabling(TableName tableName) {
-    return regionStates.getTableRegionStateNodes(tableName).stream().map(regionNode -> {
-      regionNode.lock();
-      try {
-        if (!regionStates.include(regionNode, false) ||
-          regionStates.isRegionOffline(regionNode.getRegionInfo())) {
-          return null;
-        }
-        // As in DisableTableProcedure, we will hold the xlock for table, so we can make sure that
-        // this procedure has not been executed yet, as TRSP will hold the shared lock for table all
-        // the time. So here we will unset it and when it is actually executed, it will find that
-        // the attach procedure is not itself and quit immediately.
-        if (regionNode.getProcedure() != null) {
-          regionNode.unsetProcedure(regionNode.getProcedure());
-        }
-        TransitRegionStateProcedure proc = TransitRegionStateProcedure
-          .unassign(getProcedureEnvironment(), regionNode.getRegionInfo());
-        regionNode.setProcedure(proc);
-        return proc;
-      } finally {
-        regionNode.unlock();
-      }
-    }).filter(p -> p != null).toArray(TransitRegionStateProcedure[]::new);
+    return regionStates.getTableRegionStateNodes(tableName).stream()
+      .map(this::forceCreateUnssignProcedure).filter(p -> p != null)
+      .toArray(TransitRegionStateProcedure[]::new);
+  }
+
+  /**
+   * Called by ModifyTableProcedures to unassign all the excess region replicas
+   * for a table.
+   */
+  public TransitRegionStateProcedure[] createUnassignProceduresForClosingExcessRegionReplicas(
+    TableName tableName, int newReplicaCount) {
+    return regionStates.getTableRegionStateNodes(tableName).stream()
+      .filter(regionNode -> regionNode.getRegionInfo().getReplicaId() >= newReplicaCount)
+      .map(this::forceCreateUnssignProcedure).filter(p -> p != null)
+      .toArray(TransitRegionStateProcedure[]::new);
   }
 
   public SplitTableRegionProcedure createSplitProcedure(final RegionInfo regionToSplit,
@@ -1083,7 +1126,23 @@ public class AssignmentManager {
       LOG.debug("Split request from " + serverName +
           ", parent=" + parent + " splitKey=" + Bytes.toStringBinary(splitKey));
     }
-    master.getMasterProcedureExecutor().submitProcedure(createSplitProcedure(parent, splitKey));
+    // Processing this report happens asynchronously from other activities which can mutate
+    // the region state. For example, a split procedure may already be running for this parent.
+    // A split procedure cannot succeed if the parent region is no longer open, so we can
+    // ignore it in that case.
+    // Note that submitting more than one split procedure for a given region is
+    // harmless -- the split is fenced in the procedure handling -- but it would be noisy in
+    // the logs. Only one procedure can succeed. The other procedure(s) would abort during
+    // initialization and report failure with WARN level logging.
+    RegionState parentState = regionStates.getRegionState(parent);
+    if (parentState != null && parentState.isOpened()) {
+      master.getMasterProcedureExecutor().submitProcedure(createSplitProcedure(parent,
+        splitKey));
+    } else {
+      LOG.info("Ignoring split request from " + serverName +
+        ", parent=" + parent + " because parent is unknown or not open");
+      return;
+    }
 
     // If the RS is < 2.0 throw an exception to abort the operation, we are handling the split
     if (master.getServerManager().getVersionNumber(serverName) < 0x0200000) {
@@ -1331,7 +1390,6 @@ public class AssignmentManager {
     private int totalRITsTwiceThreshold = 0;
     private int totalRITs = 0;
 
-    @VisibleForTesting
     public RegionInTransitionStat(final Configuration conf) {
       this.ritThreshold =
         conf.getInt(METRICS_RIT_STUCK_WARNING_THRESHOLD, DEFAULT_RIT_STUCK_WARNING_THRESHOLD);
@@ -1394,6 +1452,13 @@ public class AssignmentManager {
       this.statTimestamp = EnvironmentEdgeManager.currentTime();
       update(regionStates.getRegionsStateInTransition(), statTimestamp);
       update(regionStates.getRegionFailedOpen(), statTimestamp);
+
+      if (LOG.isDebugEnabled() && ritsOverThreshold != null && !ritsOverThreshold.isEmpty()) {
+        LOG.debug("RITs over threshold: {}",
+          ritsOverThreshold.entrySet().stream()
+            .map(e -> e.getKey() + ":" + e.getValue().getState().name())
+            .collect(Collectors.joining("\n")));
+      }
     }
 
     private void update(final Collection<RegionState> regions, final long currentTime) {
@@ -1476,12 +1541,23 @@ public class AssignmentManager {
   // Public so can be run by the Master as part of the startup. Needs hbase:meta to be online.
   // Needs to be done after the table state manager has been started.
   public void processOfflineRegions() {
-    List<RegionInfo> offlineRegions = regionStates.getRegionStates().stream()
-      .filter(RegionState::isOffline).filter(s -> isTableEnabled(s.getRegion().getTable()))
-      .map(RegionState::getRegion).collect(Collectors.toList());
-    if (!offlineRegions.isEmpty()) {
-      master.getMasterProcedureExecutor().submitProcedures(
-        master.getAssignmentManager().createRoundRobinAssignProcedures(offlineRegions));
+    TransitRegionStateProcedure[] procs =
+      regionStates.getRegionStateNodes().stream().filter(rsn -> rsn.isInState(State.OFFLINE))
+        .filter(rsn -> isTableEnabled(rsn.getRegionInfo().getTable())).map(rsn -> {
+          rsn.lock();
+          try {
+            if (rsn.getProcedure() != null) {
+              return null;
+            } else {
+              return rsn.setProcedure(TransitRegionStateProcedure.assign(getProcedureEnvironment(),
+                rsn.getRegionInfo(), null));
+            }
+          } finally {
+            rsn.unlock();
+          }
+        }).filter(p -> p != null).toArray(TransitRegionStateProcedure[]::new);
+    if (procs.length > 0) {
+      master.getMasterProcedureExecutor().submitProcedures(procs);
     }
   }
 
@@ -1561,8 +1637,6 @@ public class AssignmentManager {
   private void loadMeta() throws IOException {
     // TODO: use a thread pool
     regionStateStore.visitMeta(new RegionMetaLoadingVisitor());
-    // every assignment is blocked until meta is loaded.
-    wakeMetaLoadedEvent();
   }
 
   /**
@@ -1898,6 +1972,14 @@ public class AssignmentManager {
     nodeB.setState(State.SPLITTING_NEW);
 
     TableDescriptor td = master.getTableDescriptors().get(parent.getTable());
+    // TODO: here we just update the parent region info in meta, to set split and offline to true,
+    // without changing the one in the region node. This is a bit confusing but the region info
+    // field in RegionStateNode is not expected to be changed in the current design. Need to find a
+    // possible way to address this problem, or at least adding more comments about the trick to
+    // deal with this problem, that when you want to filter out split parent, you need to check both
+    // the RegionState on whether it is split, and also the region info. If one of them matches then
+    // it is a split parent. And usually only one of them can match, as after restart, the region
+    // state will be changed from SPLIT to CLOSED.
     regionStateStore.splitRegion(parent, daughterA, daughterB, serverName, td);
     if (shouldAssignFavoredNodes(parent)) {
       List<ServerName> onlineServers = this.master.getServerManager().getOnlineServersList();
@@ -2150,12 +2232,8 @@ public class AssignmentManager {
     final ProcedureEvent<?>[] events = new ProcedureEvent[regions.size()];
     final long st = System.currentTimeMillis();
 
-    if (plan == null) {
-      throw new HBaseIOException("unable to compute plans for regions=" + regions.size());
-    }
-
     if (plan.isEmpty()) {
-      return;
+      throw new HBaseIOException("unable to compute plans for regions=" + regions.size());
     }
 
     int evcount = 0;
@@ -2220,7 +2298,6 @@ public class AssignmentManager {
         .collect(Collectors.toList());
   }
 
-  @VisibleForTesting
   MasterServices getMaster() {
     return master;
   }

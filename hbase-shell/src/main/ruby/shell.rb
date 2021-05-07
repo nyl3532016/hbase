@@ -455,6 +455,7 @@ Shell.load_command_group(
     compaction_switch
     flush
     get_balancer_decisions
+    get_balancer_rejections
     get_slowlog_responses
     get_largelog_responses
     major_compact
@@ -628,5 +629,6 @@ Shell.load_command_group(
     rename_rsgroup
     alter_rsgroup_config
     show_rsgroup_config
+    get_namespace_rsgroup
   ]
 )

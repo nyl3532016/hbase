@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.rsgroup;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -25,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.HBaseIOException;
@@ -34,12 +34,16 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.constraint.ConstraintException;
+import org.apache.hadoop.hbase.favored.FavoredNodeLoadBalancer;
 import org.apache.hadoop.hbase.favored.FavoredNodesManager;
 import org.apache.hadoop.hbase.favored.FavoredNodesPromoter;
 import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.RegionPlan;
+import org.apache.hadoop.hbase.master.balancer.ClusterInfoProvider;
+import org.apache.hadoop.hbase.master.balancer.FavoredStochasticBalancer;
 import org.apache.hadoop.hbase.master.balancer.LoadBalancerFactory;
+import org.apache.hadoop.hbase.master.balancer.MasterClusterInfoProvider;
 import org.apache.hadoop.hbase.net.Address;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
@@ -47,7 +51,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.ListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
@@ -70,7 +73,6 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 public class RSGroupBasedLoadBalancer implements LoadBalancer {
   private static final Logger LOG = LoggerFactory.getLogger(RSGroupBasedLoadBalancer.class);
 
-  private Configuration config;
   private ClusterMetrics clusterStatus;
   private MasterServices masterServices;
   private FavoredNodesManager favoredNodesManager;
@@ -95,19 +97,6 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
   public RSGroupBasedLoadBalancer() {}
 
   @Override
-  public Configuration getConf() {
-    return config;
-  }
-
-  @Override
-  public void setConf(Configuration conf) {
-    this.config = conf;
-    if(internalBalancer != null) {
-      internalBalancer.setConf(conf);
-    }
-  }
-
-  @Override
   public void setClusterMetrics(ClusterMetrics sm) {
     this.clusterStatus = sm;
     if (internalBalancer != null) {
@@ -115,14 +104,12 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
     }
   }
 
-  @Override
   public void setMasterServices(MasterServices masterServices) {
     this.masterServices = masterServices;
   }
 
   /**
-   * Override to balance by RSGroup
-   * not invoke {@link #balanceTable(TableName, Map)}
+   * Balance by RSGroup.
    */
   @Override
   public List<RegionPlan> balanceCluster(
@@ -174,25 +161,25 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
   }
 
   @Override
-  public Map<ServerName, List<RegionInfo>> roundRobinAssignment(
-      List<RegionInfo> regions, List<ServerName> servers) throws IOException {
+  @NonNull
+  public Map<ServerName, List<RegionInfo>> roundRobinAssignment(List<RegionInfo> regions,
+      List<ServerName> servers) throws IOException {
     Map<ServerName, List<RegionInfo>> assignments = Maps.newHashMap();
     List<Pair<List<RegionInfo>, List<ServerName>>> pairs =
         generateGroupAssignments(regions, servers);
     for (Pair<List<RegionInfo>, List<ServerName>> pair : pairs) {
-      Map<ServerName, List<RegionInfo>> result = this.internalBalancer
-          .roundRobinAssignment(pair.getFirst(), pair.getSecond());
-      if (result != null) {
-        result.forEach((server, regionInfos) ->
-            assignments.computeIfAbsent(server, s -> Lists.newArrayList()).addAll(regionInfos));
-      }
+      Map<ServerName, List<RegionInfo>> result =
+          this.internalBalancer.roundRobinAssignment(pair.getFirst(), pair.getSecond());
+      result.forEach((server, regionInfos) -> assignments
+          .computeIfAbsent(server, s -> Lists.newArrayList()).addAll(regionInfos));
     }
     return assignments;
   }
 
   @Override
+  @NonNull
   public Map<ServerName, List<RegionInfo>> retainAssignment(Map<RegionInfo, ServerName> regions,
-    List<ServerName> servers) throws HBaseIOException {
+      List<ServerName> servers) throws HBaseIOException {
     try {
       Map<ServerName, List<RegionInfo>> assignments = new TreeMap<>();
       List<Pair<List<RegionInfo>, List<ServerName>>> pairs =
@@ -203,8 +190,8 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
         regionList.forEach(r -> currentAssignmentMap.put(r, regions.get(r)));
         Map<ServerName, List<RegionInfo>> pairResult =
             this.internalBalancer.retainAssignment(currentAssignmentMap, pair.getSecond());
-        pairResult.forEach((server, rs) ->
-            assignments.computeIfAbsent(server, s -> Lists.newArrayList()).addAll(rs));
+        pairResult.forEach((server, rs) -> assignments
+            .computeIfAbsent(server, s -> Lists.newArrayList()).addAll(rs));
       }
       return assignments;
     } catch (IOException e) {
@@ -249,7 +236,7 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
       }
       if (!fallbackRegions.isEmpty()) {
         List<ServerName> candidates = null;
-        if (fallbackEnabled) {
+        if (isFallbackEnabled()) {
           candidates = getFallBackCandidates(servers);
         }
         candidates = (candidates == null || candidates.isEmpty()) ?
@@ -346,10 +333,11 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
     }
 
     // Create the balancer
+    Configuration conf = masterServices.getConfiguration();
     Class<? extends LoadBalancer> balancerClass;
-    String balancerClassName = config.get(HBASE_RSGROUP_LOADBALANCER_CLASS);
+    String balancerClassName = conf.get(HBASE_RSGROUP_LOADBALANCER_CLASS);
     if (balancerClassName == null) {
-      balancerClass = config.getClass(HConstants.HBASE_MASTER_LOADBALANCER_CLASS,
+      balancerClass = conf.getClass(HConstants.HBASE_MASTER_LOADBALANCER_CLASS,
         LoadBalancerFactory.getDefaultLoadBalancerClass(), LoadBalancer.class);
     } else {
       try {
@@ -363,17 +351,25 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
       balancerClass = LoadBalancerFactory.getDefaultLoadBalancerClass();
     }
     internalBalancer = ReflectionUtils.newInstance(balancerClass);
-    if (internalBalancer instanceof FavoredNodesPromoter) {
-      favoredNodesManager = new FavoredNodesManager(masterServices);
-    }
-    internalBalancer.setConf(config);
-    internalBalancer.setMasterServices(masterServices);
+    internalBalancer.setClusterInfoProvider(new MasterClusterInfoProvider(masterServices));
     if(clusterStatus != null) {
       internalBalancer.setClusterMetrics(clusterStatus);
     }
+    // special handling for favor node balancers
+    if (internalBalancer instanceof FavoredNodesPromoter) {
+      favoredNodesManager = new FavoredNodesManager(masterServices);
+      if (internalBalancer instanceof FavoredNodeLoadBalancer) {
+        ((FavoredNodeLoadBalancer) internalBalancer).setMasterServices(masterServices);
+      }
+      if (internalBalancer instanceof FavoredStochasticBalancer) {
+        ((FavoredStochasticBalancer) internalBalancer).setMasterServices(masterServices);
+      }
+    }
+
+
     internalBalancer.initialize();
     // init fallback groups
-    this.fallbackEnabled = config.getBoolean(FALLBACK_GROUP_ENABLE_KEY, false);
+    this.fallbackEnabled = conf.getBoolean(FALLBACK_GROUP_ENABLE_KEY, false);
   }
 
   public boolean isOnline() {
@@ -384,6 +380,9 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
     return this.rsGroupInfoManager.isOnline();
   }
 
+  public boolean isFallbackEnabled() {
+    return fallbackEnabled;
+  }
 
   @Override
   public void regionOnline(RegionInfo regionInfo, ServerName sn) {
@@ -395,7 +394,13 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
 
   @Override
   public void onConfigurationChange(Configuration conf) {
-    //DO nothing for now
+    boolean newFallbackEnabled = conf.getBoolean(FALLBACK_GROUP_ENABLE_KEY, false);
+    if (fallbackEnabled != newFallbackEnabled) {
+      LOG.info("Changing the value of {} from {} to {}", FALLBACK_GROUP_ENABLE_KEY,
+        fallbackEnabled, newFallbackEnabled);
+      fallbackEnabled = newFallbackEnabled;
+    }
+    internalBalancer.onConfigurationChange(conf);
   }
 
   @Override
@@ -407,7 +412,6 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
     return false;
   }
 
-  @VisibleForTesting
   public void setRsGroupInfoManager(RSGroupInfoManager rsGroupInfoManager) {
     this.rsGroupInfoManager = rsGroupInfoManager;
   }
@@ -429,40 +433,6 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
     internalBalancer.updateBalancerStatus(status);
   }
 
-  /**
-   * can achieve table balanced rather than overall balanced
-   */
-  @Override
-  public List<RegionPlan> balanceTable(TableName tableName,
-      Map<ServerName, List<RegionInfo>> loadOfOneTable) {
-    if (!isOnline()) {
-      LOG.error(RSGroupInfoManager.class.getSimpleName()
-          + " is not online, unable to perform balanceTable");
-      return null;
-    }
-    Map<TableName, Map<ServerName, List<RegionInfo>>> loadOfThisTable = new HashMap<>();
-    loadOfThisTable.put(tableName, loadOfOneTable);
-    Pair<Map<TableName, Map<ServerName, List<RegionInfo>>>, List<RegionPlan>>
-      correctedStateAndRegionPlans;
-    // Calculate correct assignments and a list of RegionPlan for mis-placed regions
-    try {
-      correctedStateAndRegionPlans = correctAssignments(loadOfThisTable);
-    } catch (IOException e) {
-      LOG.error("get correct assignments and mis-placed regions error ", e);
-      return null;
-    }
-    Map<TableName, Map<ServerName, List<RegionInfo>>> correctedLoadOfThisTable =
-        correctedStateAndRegionPlans.getFirst();
-    List<RegionPlan> regionPlans = correctedStateAndRegionPlans.getSecond();
-    List<RegionPlan> tablePlans =
-        this.internalBalancer.balanceTable(tableName, correctedLoadOfThisTable.get(tableName));
-
-    if (tablePlans != null) {
-      regionPlans.addAll(tablePlans);
-    }
-    return regionPlans;
-  }
-
   private List<ServerName> getFallBackCandidates(List<ServerName> servers) {
     List<ServerName> serverNames = null;
     try {
@@ -472,5 +442,10 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
       LOG.error("Failed to get default rsgroup info to fallback", e);
     }
     return serverNames == null || serverNames.isEmpty() ? servers : serverNames;
+  }
+
+  @Override
+  public void setClusterInfoProvider(ClusterInfoProvider provider) {
+    throw new UnsupportedOperationException("Just call set master service instead");
   }
 }

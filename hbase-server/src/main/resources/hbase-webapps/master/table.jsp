@@ -30,6 +30,7 @@
   import="java.util.HashSet"
   import="java.util.Optional"
   import="java.util.TreeMap"
+  import="java.util.concurrent.TimeoutException"
   import="java.util.concurrent.TimeUnit"
   import="org.apache.commons.lang3.StringEscapeUtils"
   import="org.apache.hadoop.conf.Configuration"
@@ -52,13 +53,14 @@
   import="org.apache.hadoop.hbase.client.RegionLocator"
   import="org.apache.hadoop.hbase.client.RegionReplicaUtil"
   import="org.apache.hadoop.hbase.client.Table"
+  import="org.apache.hadoop.hbase.client.TableState"
   import="org.apache.hadoop.hbase.client.ColumnFamilyDescriptor"
   import="org.apache.hadoop.hbase.http.InfoServer"
   import="org.apache.hadoop.hbase.master.HMaster"
   import="org.apache.hadoop.hbase.master.RegionState"
   import="org.apache.hadoop.hbase.master.assignment.RegionStates"
-  import="org.apache.hadoop.hbase.master.webapp.MetaBrowser"
-  import="org.apache.hadoop.hbase.master.webapp.RegionReplicaInfo"
+  import="org.apache.hadoop.hbase.master.http.MetaBrowser"
+  import="org.apache.hadoop.hbase.master.http.RegionReplicaInfo"
   import="org.apache.hadoop.hbase.quotas.QuotaSettingsFactory"
   import="org.apache.hadoop.hbase.quotas.QuotaTableUtil"%>
 <%@ page import="org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshot" %>
@@ -153,8 +155,8 @@
   Table table = master.getConnection().getTable(TableName.valueOf(fqtn));
   boolean showFragmentation = conf.getBoolean("hbase.master.ui.fragmentation.enabled", false);
   boolean readOnly = !InfoServer.canUserModifyUI(request, getServletContext(), conf);
-  int numMetaReplicas = conf.getInt(HConstants.META_REPLICAS_NUM,
-                        HConstants.DEFAULT_META_REPLICA_NUM);
+  int numMetaReplicas =
+    master.getTableDescriptors().get(TableName.META_TABLE_NAME).getRegionReplication();
   Map<String, Integer> frags = null;
   if (showFragmentation) {
       frags = FSUtils.getTableFragmentation(master);
@@ -646,29 +648,16 @@
   </tr>
   <tr>
       <td>Enabled</td>
-      <td><%= master.getAssignmentManager().isTableEnabled(table.getName()) %></td>
+      <td><%= master.getTableStateManager().isTableState(table.getName(), TableState.State.ENABLED) %></td>
       <td>Is the table enabled</td>
   </tr>
   <tr>
       <td>Compaction</td>
       <td>
 <%
-  if (master.getAssignmentManager().isTableEnabled(table.getName())) {
-    try {
-      CompactionState compactionState = admin.getCompactionState(table.getName()).get();
-      %><%= compactionState %><%
-    } catch (Exception e) {
-
-      if(e.getCause() != null && e.getCause().getCause() instanceof NotServingRegionException) {
-        %><%= CompactionState.NONE %><%
-      } else {
-        // Nothing really to do here
-        for(StackTraceElement element : e.getStackTrace()) {
-           %><%= StringEscapeUtils.escapeHtml4(element.toString()) %><%
-        }
-       %> Unknown <%
-      }
-    }
+  if (master.getTableStateManager().isTableState(table.getName(), TableState.State.ENABLED)) {
+    CompactionState compactionState = master.getCompactionState(table.getName());
+    %><%= compactionState==null?"UNKNOWN":compactionState %><%
   } else {
     %><%= CompactionState.NONE %><%
   }
@@ -1100,9 +1089,18 @@
 </table>
 
 <% }
-} catch(Exception ex) {
+} catch(Exception ex) { %>
+  Unknown Issue with Regions
+  <div onclick="document.getElementById('closeStackTrace').style.display='block';document.getElementById('openStackTrace').style.display='none';">
+    <a id="openStackTrace" style="cursor:pointer;"> Show StackTrace</a>
+  </div>
+  <div id="closeStackTrace" style="display:none;clear:both;">
+    <div onclick="document.getElementById('closeStackTrace').style.display='none';document.getElementById('openStackTrace').style.display='block';">
+      <a style="cursor:pointer;"> Close StackTrace</a>
+    </div>
+  <%
   for(StackTraceElement element : ex.getStackTrace()) {
-    %><%= StringEscapeUtils.escapeHtml4(element.toString()) %><%
+    %><%= StringEscapeUtils.escapeHtml4(element.toString() + "\n") %><%
   }
 }
 } // end else
@@ -1251,7 +1249,9 @@ $(document).ready(function()
                 3: {sorter: 'separator'},
                 4: {sorter: 'filesize'},
                 5: {sorter: 'separator'},
-                6: {sorter: 'filesize'}
+                6: {sorter: 'filesize'},
+                7: {empty: 'emptyMin'},
+                8: {empty: 'emptyMax'}
             }
         });
         $("#metaTableBaseStatsTable").tablesorter({
@@ -1260,7 +1260,9 @@ $(document).ready(function()
                 3: {sorter: 'separator'},
                 4: {sorter: 'filesize'},
                 5: {sorter: 'separator'},
-                6: {sorter: 'filesize'}
+                6: {sorter: 'filesize'},
+                7: {empty: 'emptyMin'},
+                8: {empty: 'emptyMax'}
             }
         });
         $("#tableLocalityStatsTable").tablesorter({

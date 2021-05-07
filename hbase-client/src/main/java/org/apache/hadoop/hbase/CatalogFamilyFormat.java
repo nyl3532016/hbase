@@ -39,8 +39,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 /**
  * Helper class for generating/parsing
  * {@value org.apache.hadoop.hbase.HConstants#CATALOG_FAMILY_STR} family cells in meta table.
@@ -101,7 +99,7 @@ public class CatalogFamilyFormat {
     long regionId = Long.parseLong(Bytes.toString(fields[2]));
     int replicaId = fields.length > 3 ? Integer.parseInt(Bytes.toString(fields[3]), 16) : 0;
     return RegionInfoBuilder.newBuilder(TableName.valueOf(fields[0])).setStartKey(fields[1])
-      .setEndKey(fields[2]).setSplit(false).setRegionId(regionId).setReplicaId(replicaId).build();
+      .setRegionId(regionId).setReplicaId(replicaId).build();
   }
 
   /**
@@ -276,7 +274,6 @@ public class CatalogFamilyFormat {
   }
 
   /** The delimiter for meta columns for replicaIds &gt; 0 */
-  @VisibleForTesting
   static final char META_REPLICA_ID_DELIMITER = '_';
 
   /**
@@ -285,7 +282,6 @@ public class CatalogFamilyFormat {
    * @param serverColumn the column qualifier
    * @return an int for the replicaId
    */
-  @VisibleForTesting
   static int parseReplicaIdFromServerColumn(byte[] serverColumn) {
     String serverStr = Bytes.toString(serverColumn);
 
@@ -311,8 +307,7 @@ public class CatalogFamilyFormat {
    * @param replicaId the replicaId of the region
    * @return a byte[] for state qualifier
    */
-  @VisibleForTesting
-  static byte[] getRegionStateColumn(int replicaId) {
+  public static byte[] getRegionStateColumn(int replicaId) {
     return replicaId == 0 ? HConstants.STATE_QUALIFIER :
       Bytes.toBytes(HConstants.STATE_QUALIFIER_STR + META_REPLICA_ID_DELIMITER +
         String.format(RegionInfo.REPLICA_ID_FORMAT, replicaId));

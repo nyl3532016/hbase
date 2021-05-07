@@ -20,13 +20,9 @@ package org.apache.hadoop.hbase.master.normalizer;
 
 import java.util.List;
 import org.apache.hadoop.conf.Configurable;
-import org.apache.hadoop.hbase.HBaseIOException;
-import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.master.MasterServices;
-import org.apache.hadoop.hbase.master.normalizer.NormalizationPlan.PlanType;
 import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
 
 /**
  * Performs "normalization" of regions of a table, making sure that suboptimal
@@ -39,11 +35,10 @@ import org.apache.yetus.audience.InterfaceStability;
  * "split/merge storms".
  */
 @InterfaceAudience.Private
-@InterfaceStability.Evolving
-public interface RegionNormalizer extends Configurable {
+interface RegionNormalizer extends Configurable {
   /**
    * Set the master service. Must be called before first call to
-   * {@link #computePlansForTable(TableName)}.
+   * {@link #computePlansForTable(TableDescriptor)}.
    * @param masterServices master services to use
    */
   void setMasterServices(MasterServices masterServices);
@@ -51,24 +46,9 @@ public interface RegionNormalizer extends Configurable {
   /**
    * Computes a list of normalizer actions to perform on the target table. This is the primary
    * entry-point from the Master driving a normalization activity.
-   * @param table table to normalize
+   * @param tableDescriptor table descriptor for table which needs normalize
    * @return A list of the normalization actions to perform, or an empty list
    *   if there's nothing to do.
    */
-  List<NormalizationPlan> computePlansForTable(TableName table)
-      throws HBaseIOException;
-
-  /**
-   * Notification for the case where plan couldn't be executed due to constraint violation, such as
-   * namespace quota
-   * @param hri the region which is involved in the plan
-   * @param type type of plan
-   */
-  void planSkipped(RegionInfo hri, PlanType type);
-
-  /**
-   * @param type type of plan for which skipped count is to be returned
-   * @return the count of plans of specified type which were skipped
-   */
-  long getSkippedCount(NormalizationPlan.PlanType type);
+  List<NormalizationPlan> computePlansForTable(TableDescriptor tableDescriptor);
 }

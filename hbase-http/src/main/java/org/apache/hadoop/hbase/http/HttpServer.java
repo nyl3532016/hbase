@@ -66,8 +66,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.http.HttpVersion;
@@ -82,6 +80,7 @@ import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SslConnectionFactory
 import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.HandlerCollection;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.RequestLogHandler;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.gzip.GzipHandler;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.DefaultServlet;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterHolder;
 import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterMapping;
@@ -174,7 +173,6 @@ public class HttpServer implements FilterContainer {
 
   private final List<ListenerInfo> listeners = Lists.newArrayList();
 
-  @VisibleForTesting
   public List<ServerConnector> getServerConnectors() {
     return listeners.stream().map(info -> info.listener).collect(Collectors.toList());
   }
@@ -414,6 +412,7 @@ public class HttpServer implements FilterContainer {
         httpConfig.setHeaderCacheSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setResponseHeaderSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setRequestHeaderSize(DEFAULT_MAX_HEADER_SIZE);
+        httpConfig.setSendServerVersion(false);
 
         if ("http".equals(scheme)) {
           listener = new ServerConnector(server.webServer, new HttpConnectionFactory(httpConfig));
@@ -576,6 +575,7 @@ public class HttpServer implements FilterContainer {
     this.findPort = b.findPort;
     this.authenticationEnabled = b.securityEnabled;
     initializeWebServer(b.name, b.hostName, b.conf, b.pathSpecs, b);
+    this.webServer.setHandler(buildGzipHandler(this.webServer.getHandler()));
   }
 
   private void initializeWebServer(String name, String hostName,
@@ -661,6 +661,23 @@ public class HttpServer implements FilterContainer {
     ctx.getServletContext().setAttribute(ADMINS_ACL, adminsAcl);
     addNoCacheFilter(ctx);
     return ctx;
+  }
+
+  /**
+   * Construct and configure an instance of {@link GzipHandler}. With complex
+   * multi-{@link WebAppContext} configurations, it's easiest to apply this handler directly to the
+   * instance of {@link Server} near the end of its configuration, something like
+   * <pre>
+   *    Server server = new Server();
+   *    //...
+   *    server.setHandler(buildGzipHandler(server.getHandler()));
+   *    server.start();
+   * </pre>
+   */
+  public static GzipHandler buildGzipHandler(final Handler wrapped) {
+    final GzipHandler gzipHandler = new GzipHandler();
+    gzipHandler.setHandler(wrapped);
+    return gzipHandler;
   }
 
   private static void addNoCacheFilter(WebAppContext ctxt) {
@@ -1121,7 +1138,6 @@ public class HttpServer implements FilterContainer {
    * Open the main listener for the server
    * @throws Exception if the listener cannot be opened or the appropriate port is already in use
    */
-  @VisibleForTesting
   void openListeners() throws Exception {
     for (ListenerInfo li : listeners) {
       ServerConnector listener = li.listener;

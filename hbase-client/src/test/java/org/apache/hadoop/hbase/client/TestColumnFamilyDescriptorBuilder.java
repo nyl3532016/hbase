@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.client;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -39,6 +40,7 @@ import org.junit.Assert;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import java.util.Map;
 
 @Category({ MiscTests.class, SmallTests.class })
 public class TestColumnFamilyDescriptorBuilder {
@@ -180,5 +182,81 @@ public class TestColumnFamilyDescriptorBuilder {
     ttl = "43282800 SECONDS (500 Days 23 hours)";
     builder.setTimeToLive(ttl);
     Assert.assertEquals(43282800, builder.build().getTimeToLive());
+  }
+
+  @Test
+  public void testSetBlocksize() throws HBaseException {
+    String blocksize;
+    ColumnFamilyDescriptorBuilder builder =
+      ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("foo"));
+
+    blocksize = "131072";
+    builder.setBlocksize(blocksize);
+    assertEquals(131072, builder.build().getBlocksize());
+
+    blocksize = "100KB";
+    builder.setBlocksize(blocksize);
+    assertEquals(102400, builder.build().getBlocksize());
+
+    blocksize = "1MB";
+    builder.setBlocksize(blocksize);
+    assertEquals(1048576, builder.build().getBlocksize());
+
+    // ignore case
+    blocksize = "64kb 512B";
+    builder.setBlocksize(blocksize);
+    assertEquals(66048, builder.build().getBlocksize());
+
+    blocksize = "66048 B (64KB 512B)";
+    builder.setBlocksize(blocksize);
+    assertEquals(66048, builder.build().getBlocksize());
+  }
+
+  /**
+   * Test for verifying the ColumnFamilyDescriptorBuilder's default values so that backward
+   * compatibility with hbase-1.x can be mantained (see HBASE-24981).
+   */
+  @Test
+  public void testDefaultBuilder() {
+    final Map<String, String> defaultValueMap = ColumnFamilyDescriptorBuilder.getDefaultValues();
+    assertEquals(defaultValueMap.size(), 11);
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.BLOOMFILTER),
+      BloomType.ROW.toString());
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.REPLICATION_SCOPE), "0");
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.MAX_VERSIONS), "1");
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.MIN_VERSIONS), "0");
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.COMPRESSION),
+      Compression.Algorithm.NONE.toString());
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.TTL),
+      Integer.toString(Integer.MAX_VALUE));
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.BLOCKSIZE),
+      Integer.toString(64 * 1024));
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.IN_MEMORY),
+      Boolean.toString(false));
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.BLOCKCACHE),
+      Boolean.toString(true));
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.KEEP_DELETED_CELLS),
+      KeepDeletedCells.FALSE.toString());
+    assertEquals(defaultValueMap.get(ColumnFamilyDescriptorBuilder.DATA_BLOCK_ENCODING),
+      DataBlockEncoding.NONE.toString());
+  }
+
+  @Test
+  public void testSetEmptyValue() {
+    ColumnFamilyDescriptorBuilder builder =
+      ColumnFamilyDescriptorBuilder.newBuilder(HConstants.CATALOG_FAMILY);
+    String testConf = "TestConfiguration";
+    String testValue = "TestValue";
+    // test set value
+    builder.setValue(testValue, "2");
+    assertEquals("2", Bytes.toString(builder.build().getValue(Bytes.toBytes(testValue))));
+    builder.setValue(testValue, "");
+    assertNull(builder.build().getValue(Bytes.toBytes(testValue)));
+
+    // test set configuration
+    builder.setConfiguration(testConf, "1");
+    assertEquals("1", builder.build().getConfigurationValue(testConf));
+    builder.setConfiguration(testConf, "");
+    assertNull(builder.build().getConfigurationValue(testConf));
   }
 }

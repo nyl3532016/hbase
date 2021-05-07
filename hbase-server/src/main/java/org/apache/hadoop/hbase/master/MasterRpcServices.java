@@ -84,6 +84,7 @@ import org.apache.hadoop.hbase.master.procedure.MasterProcedureUtil.NonceProcedu
 import org.apache.hadoop.hbase.master.procedure.ServerCrashProcedure;
 import org.apache.hadoop.hbase.mob.MobUtils;
 import org.apache.hadoop.hbase.namequeues.BalancerDecisionDetails;
+import org.apache.hadoop.hbase.namequeues.BalancerRejectionDetails;
 import org.apache.hadoop.hbase.namequeues.NamedQueueRecorder;
 import org.apache.hadoop.hbase.namequeues.request.NamedQueueGetRequest;
 import org.apache.hadoop.hbase.namequeues.response.NamedQueueGetResponse;
@@ -459,8 +460,7 @@ public class MasterRpcServices extends RSRpcServices implements
       final String name) throws IOException {
     final Configuration conf = regionServer.getConfiguration();
     // RpcServer at HM by default enable ByteBufferPool iff HM having user table region in it
-    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY,
-      LoadBalancer.isMasterCanHostUserRegions(conf));
+    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY, false);
     try {
       return RpcServerFactory.createRpcServer(server, name, getServices(),
           bindAddress, // use final bindAddress for this server.
@@ -963,6 +963,12 @@ public class MasterRpcServices extends RSRpcServices implements
       if (execController.getFailedOn() != null) {
         throw execController.getFailedOn();
       }
+
+      String remoteAddress = RpcServer.getRemoteAddress().map(InetAddress::toString).orElse("");
+      User caller = RpcServer.getRequestUser().orElse(null);
+      AUDITLOG.info("User {} (remote address: {}) master service request for {}.{}", caller,
+        remoteAddress, serviceName, methodName);
+
       return CoprocessorRpcUtils.getResponse(execResult, HConstants.EMPTY_BYTE_ARRAY);
     } catch (IOException ie) {
       throw new ServiceException(ie);
@@ -1913,9 +1919,7 @@ public class MasterRpcServices extends RSRpcServices implements
           master.cpHost.postSetSplitOrMergeEnabled(newValue, switchType);
         }
       }
-    } catch (IOException e) {
-      throw new ServiceException(e);
-    } catch (KeeperException e) {
+    } catch (IOException | KeeperException e) {
       throw new ServiceException(e);
     }
     return response.build();
@@ -1940,7 +1944,8 @@ public class MasterRpcServices extends RSRpcServices implements
         .namespace(request.hasNamespace() ? request.getNamespace() : null)
         .build();
       return NormalizeResponse.newBuilder()
-        .setNormalizerRan(master.normalizeRegions(ntfp))
+        // all API requests are considered priority requests.
+        .setNormalizerRan(master.normalizeRegions(ntfp, true))
         .build();
     } catch (IOException ex) {
       throw new ServiceException(ex);
@@ -1953,20 +1958,27 @@ public class MasterRpcServices extends RSRpcServices implements
     rpcPreCheck("setNormalizerRunning");
 
     // Sets normalizer on/off flag in ZK.
-    boolean prevValue = master.getRegionNormalizerTracker().isNormalizerOn();
-    boolean newValue = request.getOn();
-    try {
-      master.getRegionNormalizerTracker().setNormalizerOn(newValue);
-    } catch (KeeperException ke) {
-      LOG.warn("Error flipping normalizer switch", ke);
-    }
+    // TODO: this method is totally broken in terms of atomicity of actions and values read.
+    //  1. The contract has this RPC returning the previous value. There isn't a ZKUtil method
+    //     that lets us retrieve the previous value as part of setting a new value, so we simply
+    //     perform a read before issuing the update. Thus we have a data race opportunity, between
+    //     when the `prevValue` is read and whatever is actually overwritten.
+    //  2. Down in `setNormalizerOn`, the call to `createAndWatch` inside of the catch clause can
+    //     itself fail in the event that the znode already exists. Thus, another data race, between
+    //     when the initial `setData` call is notified of the absence of the target znode and the
+    //     subsequent `createAndWatch`, with another client creating said node.
+    //  That said, there's supposed to be only one active master and thus there's supposed to be
+    //  only one process with the authority to modify the value.
+    final boolean prevValue = master.getRegionNormalizerManager().isNormalizerOn();
+    final boolean newValue = request.getOn();
+    master.getRegionNormalizerManager().setNormalizerOn(newValue);
     LOG.info("{} set normalizerSwitch={}", master.getClientIdAuditPrefix(), newValue);
     return SetNormalizerRunningResponse.newBuilder().setPrevNormalizerValue(prevValue).build();
   }
 
   @Override
   public IsNormalizerEnabledResponse isNormalizerEnabled(RpcController controller,
-      IsNormalizerEnabledRequest request) throws ServiceException {
+    IsNormalizerEnabledRequest request) {
     IsNormalizerEnabledResponse.Builder response = IsNormalizerEnabledResponse.newBuilder();
     response.setEnabled(master.isNormalizerOn());
     return response.build();
@@ -2434,6 +2446,15 @@ public class MasterRpcServices extends RSRpcServices implements
         Set<Address> clearedServers = new HashSet<>();
         for (HBaseProtos.ServerName pbServer : request.getServerNameList()) {
           ServerName server = ProtobufUtil.toServerName(pbServer);
+
+          final boolean deadInProcess = master.getProcedures().stream().anyMatch(
+            p -> (p instanceof ServerCrashProcedure)
+              && ((ServerCrashProcedure) p).getServerName().equals(server));
+          if (deadInProcess) {
+            throw new ServiceException(
+              String.format("Dead server '%s' is not 'dead' in fact...", server));
+          }
+
           if (!deadServer.removeDeadServer(server)) {
             response.addServerName(pbServer);
           } else {
@@ -2512,6 +2533,7 @@ public class MasterRpcServices extends RSRpcServices implements
   @Override
   public GetTableStateResponse setTableStateInMeta(RpcController controller,
       SetTableStateInMetaRequest request) throws ServiceException {
+    rpcPreCheck("setTableStateInMeta");
     TableName tn = ProtobufUtil.toTableName(request.getTableName());
     try {
       TableState prevState = this.master.getTableStateManager().getTableState(tn);
@@ -2534,6 +2556,7 @@ public class MasterRpcServices extends RSRpcServices implements
   @Override
   public SetRegionStateInMetaResponse setRegionStateInMeta(RpcController controller,
     SetRegionStateInMetaRequest request) throws ServiceException {
+    rpcPreCheck("setRegionStateInMeta");
     SetRegionStateInMetaResponse.Builder builder = SetRegionStateInMetaResponse.newBuilder();
     try {
       for (RegionSpecifierAndState s : request.getStatesList()) {
@@ -2715,8 +2738,34 @@ public class MasterRpcServices extends RSRpcServices implements
   }
 
   @Override
+  public MasterProtos.ScheduleSCPsForUnknownServersResponse scheduleSCPsForUnknownServers(
+      RpcController controller, MasterProtos.ScheduleSCPsForUnknownServersRequest request)
+      throws ServiceException {
+
+    List<Long> pids = new ArrayList<>();
+    final Set<ServerName> serverNames =
+      master.getAssignmentManager().getRegionStates().getRegionStates().stream()
+        .map(RegionState::getServerName).collect(Collectors.toSet());
+
+    final Set<ServerName> unknownServerNames = serverNames.stream()
+      .filter(sn -> master.getServerManager().isServerUnknown(sn)).collect(Collectors.toSet());
+
+    for (ServerName sn: unknownServerNames) {
+      LOG.info("{} schedule ServerCrashProcedure for unknown {}",
+        this.master.getClientIdAuditPrefix(), sn);
+      if (shouldSubmitSCP(sn)) {
+        pids.add(this.master.getServerManager().expireServer(sn, true));
+      } else {
+        pids.add(Procedure.NO_PROC_ID);
+      }
+    }
+    return MasterProtos.ScheduleSCPsForUnknownServersResponse.newBuilder().addAllPid(pids).build();
+  }
+
+  @Override
   public FixMetaResponse fixMeta(RpcController controller, FixMetaRequest request)
       throws ServiceException {
+    rpcPreCheck("fixMeta");
     try {
       MetaFixer mf = new MetaFixer(this.master);
       mf.fix();
@@ -3348,6 +3397,16 @@ public class MasterRpcServices extends RSRpcServices implements
           .setLogClassName(balancerDecisionsResponse.getClass().getName())
           .setLogMessage(balancerDecisionsResponse.toByteString())
           .build();
+      }else if (logClassName.contains("BalancerRejectionsRequest")){
+        MasterProtos.BalancerRejectionsRequest balancerRejectionsRequest =
+          (MasterProtos.BalancerRejectionsRequest) method
+            .invoke(null, request.getLogMessage());
+        MasterProtos.BalancerRejectionsResponse balancerRejectionsResponse =
+          getBalancerRejections(balancerRejectionsRequest);
+        return HBaseProtos.LogEntry.newBuilder()
+          .setLogClassName(balancerRejectionsResponse.getClass().getName())
+          .setLogMessage(balancerRejectionsResponse.toByteString())
+          .build();
       }
     } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException
         | InvocationTargetException e) {
@@ -3373,6 +3432,24 @@ public class MasterRpcServices extends RSRpcServices implements
       namedQueueGetResponse.getBalancerDecisions();
     return MasterProtos.BalancerDecisionsResponse.newBuilder()
       .addAllBalancerDecision(balancerDecisions).build();
+  }
+
+  private MasterProtos.BalancerRejectionsResponse getBalancerRejections(
+    MasterProtos.BalancerRejectionsRequest request) {
+    final NamedQueueRecorder namedQueueRecorder = this.regionServer.getNamedQueueRecorder();
+    if (namedQueueRecorder == null) {
+      return MasterProtos.BalancerRejectionsResponse.newBuilder()
+        .addAllBalancerRejection(Collections.emptyList()).build();
+    }
+    final NamedQueueGetRequest namedQueueGetRequest = new NamedQueueGetRequest();
+    namedQueueGetRequest.setNamedQueueEvent(BalancerRejectionDetails.BALANCER_REJECTION_EVENT);
+    namedQueueGetRequest.setBalancerRejectionsRequest(request);
+    NamedQueueGetResponse namedQueueGetResponse =
+      namedQueueRecorder.getNamedQueueRecords(namedQueueGetRequest);
+    List<RecentLogs.BalancerRejection> balancerRejections =
+      namedQueueGetResponse.getBalancerRejections();
+    return MasterProtos.BalancerRejectionsResponse.newBuilder()
+      .addAllBalancerRejection(balancerRejections).build();
   }
 
 }

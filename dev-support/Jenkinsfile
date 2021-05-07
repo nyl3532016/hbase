@@ -17,7 +17,7 @@
 pipeline {
   agent {
     node {
-      label 'Hadoop'
+      label 'hbase'
     }
   }
   triggers {
@@ -25,13 +25,13 @@ pipeline {
   }
   options {
     buildDiscarder(logRotator(numToKeepStr: '15'))
-    timeout (time: 9, unit: 'HOURS')
+    timeout (time: 16, unit: 'HOURS')
     timestamps()
     skipDefaultCheckout()
     disableConcurrentBuilds()
   }
   environment {
-    YETUS_RELEASE = '0.11.1'
+    YETUS_RELEASE = '0.12.0'
     // where we'll write everything from different steps. Need a copy here so the final step can check for success/failure.
     OUTPUT_DIR_RELATIVE_GENERAL = 'output-general'
     OUTPUT_DIR_RELATIVE_JDK7 = 'output-jdk7'
@@ -49,7 +49,7 @@ pipeline {
     ARCHIVE_PATTERN_LIST = 'TEST-*.xml,org.apache.h*.txt,*.dumpstream,*.dump'
     // These tests currently have known failures. Once they burn down to 0, remove from here so that new problems will cause a failure.
     TESTS_FILTER = 'cc,checkstyle,javac,javadoc,pylint,shellcheck,whitespace,perlcritic,ruby-lint,rubocop,mvnsite'
-    EXCLUDE_TESTS_URL = "${JENKINS_URL}/job/HBase/job/HBase-Find-Flaky-Tests/job/${BRANCH_NAME}/lastSuccessfulBuild/artifact/excludes"
+    EXCLUDE_TESTS_URL = "${JENKINS_URL}/job/HBase/job/HBase-Find-Flaky-Tests/job/${BRANCH_NAME}/lastSuccessfulBuild/artifact/output/excludes"
       // TODO does hadoopcheck need to be jdk specific?
     SHALLOW_CHECKS = 'all,-shadedjars,-unit' // run by the 'yetus general check'
     DEEP_CHECKS = 'compile,htmlout,javac,maven,mvninstall,shadedjars,unit' // run by 'yetus jdkX (HadoopY) checks'
@@ -192,7 +192,7 @@ pipeline {
         stage ('yetus general check') {
           agent {
             node {
-              label 'Hadoop'
+              label 'hbase'
             }
           }
           environment {
@@ -257,7 +257,7 @@ pipeline {
         stage ('yetus jdk7 checks') {
           agent {
             node {
-              label 'Hadoop'
+              label 'hbase'
             }
           }
           when {
@@ -338,7 +338,7 @@ pipeline {
         stage ('yetus jdk8 hadoop2 checks') {
           agent {
             node {
-              label 'Hadoop'
+              label 'hbase'
             }
           }
           when {
@@ -419,7 +419,7 @@ pipeline {
         stage ('yetus jdk8 hadoop3 checks') {
           agent {
             node {
-              label 'Hadoop'
+              label 'hbase'
             }
           }
           when {
@@ -504,7 +504,7 @@ pipeline {
         stage ('yetus jdk11 hadoop3 checks') {
           agent {
             node {
-              label 'Hadoop'
+              label 'hbase'
             }
           }
           when {
@@ -593,9 +593,9 @@ pipeline {
         // TODO (HBASE-23870): replace this with invocation of the release tool
         stage ('packaging and integration') {
           tools {
-            maven 'Maven (latest)'
+            maven 'maven_latest'
             // this needs to be set to the jdk that ought to be used to build releases on the branch the Jenkinsfile is stored in.
-            jdk "JDK 1.8 (latest)"
+            jdk "jdk_1.8_latest"
           }
           environment {
             BASEDIR = "${env.WORKSPACE}/component"

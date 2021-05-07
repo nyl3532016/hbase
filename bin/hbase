@@ -301,13 +301,18 @@ else
   # make it easier to check for shaded/not later on.
   shaded_jar=""
 fi
+# here we will add slf4j-api, commons-logging, jul-to-slf4j, jcl-over-slf4j
+# to classpath, as they are all logging bridges. Only exclude log4j* so we
+# will not actually log anything out. Add it later if necessary
 for f in "${HBASE_HOME}"/lib/client-facing-thirdparty/*.jar; do
   if [[ ! "${f}" =~ ^.*/htrace-core-3.*\.jar$ ]] && \
-     [ "${f}" != "htrace-core.jar$" ] && \
-     [[ ! "${f}" =~ ^.*/slf4j-log4j.*$ ]]; then
+     [[ "${f}" != "htrace-core.jar$" ]] && \
+     [[ ! "${f}" =~ ^.*/log4j.*$ ]]; then
     CLASSPATH="${CLASSPATH}:${f}"
   fi
 done
+# redirect java.util.logging to slf4j
+HBASE_OPTS="$HBASE_OPTS -Djava.util.logging.config.class=org.apache.hadoop.hbase.logging.JulToSlf4jInitializer"
 
 # default log directory & file
 if [ "$HBASE_LOG_DIR" = "" ]; then
@@ -475,6 +480,11 @@ add_jdk11_deps_to_classpath() {
   done
 }
 
+enable_trace() {
+  agent_jar=$(find lib/trace -type f -name "opentelemetry-javaagent-*")
+  HBASE_OPTS="$HBASE_OPTS -javaagent:$agent_jar $HBASE_TRACE_OPTS"
+}
+
 #Add the development env class path stuff
 if $in_dev_env; then
   add_maven_deps_to_classpath "cached_classpath.txt"
@@ -509,13 +519,22 @@ fi
 # figure out which class to run
 if [ "$COMMAND" = "shell" ] ; then
 	#find the hbase ruby sources
+  # assume we are in a binary install if lib/ruby exists
   if [ -d "$HBASE_HOME/lib/ruby" ]; then
-    HBASE_OPTS="$HBASE_OPTS -Dhbase.ruby.sources=$HBASE_HOME/lib/ruby"
+    # We want jruby to consume these things rather than our bootstrap script;
+    # jruby will look for the env variable 'JRUBY_OPTS'.
+    JRUBY_OPTS="${JRUBY_OPTS} -X+O"
+    export JRUBY_OPTS
+    # hbase-shell.jar contains a 'jar-bootstrap.rb'
+    # for more info see
+    # https://github.com/jruby/jruby/wiki/StandaloneJarsAndClasses#standalone-executable-jar-files
+    CLASS="org.jruby.JarBootstrapMain"
+  # otherwise assume we are running in a source checkout
   else
     HBASE_OPTS="$HBASE_OPTS -Dhbase.ruby.sources=$HBASE_HOME/hbase-shell/src/main/ruby"
+    CLASS="org.jruby.Main -X+O ${JRUBY_OPTS} ${HBASE_HOME}/hbase-shell/src/main/ruby/jar-bootstrap.rb"
   fi
   HBASE_OPTS="$HBASE_OPTS $HBASE_SHELL_OPTS"
-  CLASS="org.jruby.Main -X+O ${JRUBY_OPTS} ${HBASE_HOME}/bin/hirb.rb"
 elif [ "$COMMAND" = "hbck" ] ; then
   # Look for the -j /path/to/HBCK2.jar parameter. Else pass through to hbck.
   case "${1}" in
@@ -649,7 +668,7 @@ elif [ "$COMMAND" = "mapredcp" ] ; then
     for f in "${HBASE_HOME}"/lib/client-facing-thirdparty/*.jar; do
       if [[ ! "${f}" =~ ^.*/htrace-core-3.*\.jar$ ]] && \
          [ "${f}" != "htrace-core.jar$" ] && \
-         [[ ! "${f}" =~ ^.*/slf4j-log4j.*$ ]]; then
+         [[ ! "${f}" =~ ^.*/log4j.*$ ]]; then
         echo -n ":${f}"
       fi
     done
@@ -758,6 +777,11 @@ elif [ "${DEBUG}" = "true" ]; then
   echo "JDK11 jars skipped from classpath."
 fi
 
+if [[ -n "${HBASE_TRACE_OPTS}" ]]; then
+  echo "Attach opentelemetry agent to enable trace"
+  enable_trace
+fi
+
 # Have JVM dump heap if we run out of memory.  Files will be 'launch directory'
 # and are named like the following: java_pid21612.hprof. Apparently it doesn't
 # 'cost' to have this flag enabled. Its a 1.6 flag only. See:
@@ -766,7 +790,11 @@ HBASE_OPTS="$HBASE_OPTS -Dhbase.log.dir=$HBASE_LOG_DIR"
 HBASE_OPTS="$HBASE_OPTS -Dhbase.log.file=$HBASE_LOGFILE"
 HBASE_OPTS="$HBASE_OPTS -Dhbase.home.dir=$HBASE_HOME"
 HBASE_OPTS="$HBASE_OPTS -Dhbase.id.str=$HBASE_IDENT_STRING"
-HBASE_OPTS="$HBASE_OPTS -Dhbase.root.logger=${HBASE_ROOT_LOGGER:-INFO,console}"
+# log4j2 does not support setting log level and appender at once, so we need to split HBASE_ROOT_LOGGER
+HBASE_ROOT_LOGGER=${HBASE_ROOT_LOGGER:-INFO,console}
+array=(${HBASE_ROOT_LOGGER//,/ })
+HBASE_OPTS="$HBASE_OPTS -Dhbase.root.logger.level=${array[0]}"
+HBASE_OPTS="$HBASE_OPTS -Dhbase.root.logger.appender=${array[1]}"
 if [ "x$JAVA_LIBRARY_PATH" != "x" ]; then
   HBASE_OPTS="$HBASE_OPTS -Djava.library.path=$JAVA_LIBRARY_PATH"
   export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$JAVA_LIBRARY_PATH"
@@ -774,17 +802,19 @@ fi
 
 # Enable security logging on the master and regionserver only
 if [ "$COMMAND" = "master" ] || [ "$COMMAND" = "regionserver" ]; then
-  HBASE_OPTS="$HBASE_OPTS -Dhbase.security.logger=${HBASE_SECURITY_LOGGER:-INFO,RFAS}"
+  HBASE_SECURITY_LOGGER=${HBASE_SECURITY_LOGGER:-INFO,RFAS}
 else
-  HBASE_OPTS="$HBASE_OPTS -Dhbase.security.logger=${HBASE_SECURITY_LOGGER:-INFO,NullAppender}"
+  HBASE_SECURITY_LOGGER=${HBASE_SECURITY_LOGGER:-INFO,NullAppender}
 fi
+array=(${HBASE_SECURITY_LOGGER//,/ })
+HBASE_OPTS="$HBASE_OPTS -Dhbase.security.logger.level=${array[0]}"
+HBASE_OPTS="$HBASE_OPTS -Dhbase.security.logger.appender=${array[1]}"
 
 HEAP_SETTINGS="$JAVA_HEAP_MAX $JAVA_OFFHEAP_MAX"
 # by now if we're running a command it means we need logging
-for f in ${HBASE_HOME}/lib/client-facing-thirdparty/slf4j-log4j*.jar; do
+for f in ${HBASE_HOME}/lib/client-facing-thirdparty/log4j*.jar; do
   if [ -f "${f}" ]; then
     CLASSPATH="${CLASSPATH}:${f}"
-    break
   fi
 done
 

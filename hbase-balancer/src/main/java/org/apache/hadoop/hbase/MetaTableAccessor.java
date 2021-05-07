@@ -27,7 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell.Type;
 import org.apache.hadoop.hbase.ClientMetaTableAccessor.QueryType;
 import org.apache.hadoop.hbase.client.Connection;
@@ -55,8 +55,6 @@ import org.apache.hadoop.hbase.util.PairOfSameType;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Read/write operations on <code>hbase:meta</code> region as well as assignment information stored
@@ -247,7 +245,7 @@ public final class MetaTableAccessor {
       throws IOException {
     RowFilter rowFilter =
         new RowFilter(CompareOperator.EQUAL, new SubstringComparator(regionEncodedName));
-    Scan scan = getMetaScan(connection, 1);
+    Scan scan = getMetaScan(connection.getConfiguration(), 1);
     scan.setFilter(rowFilter);
     try (Table table = getMetaHTable(connection);
         ResultScanner resultScanner = table.getScanner(scan)) {
@@ -262,7 +260,6 @@ public final class MetaTableAccessor {
    *          true and we'll leave out offlined regions from returned list
    * @return List of all user-space regions.
    */
-  @VisibleForTesting
   public static List<RegionInfo> getAllRegions(Connection connection,
     boolean excludeOfflinedSplitParents) throws IOException {
     List<Pair<RegionInfo, ServerName>> result;
@@ -319,27 +316,24 @@ public final class MetaTableAccessor {
    * and scan until it hits a new table since that requires parsing the HRI to get the table name.
    * @param tableName bytes of table's name
    * @return configured Scan object
-   * @deprecated This is internal so please remove it when we get a chance.
    */
-  @Deprecated
-  public static Scan getScanForTableName(Connection connection, TableName tableName) {
+  public static Scan getScanForTableName(Configuration conf, TableName tableName) {
     // Start key is just the table name with delimiters
     byte[] startKey = ClientMetaTableAccessor.getTableStartRowForMeta(tableName, QueryType.REGION);
     // Stop key appends the smallest possible char to the table name
     byte[] stopKey = ClientMetaTableAccessor.getTableStopRowForMeta(tableName, QueryType.REGION);
 
-    Scan scan = getMetaScan(connection, -1);
+    Scan scan = getMetaScan(conf, -1);
     scan.withStartRow(startKey);
     scan.withStopRow(stopKey);
     return scan;
   }
 
-  private static Scan getMetaScan(Connection connection, int rowUpperLimit) {
+  private static Scan getMetaScan(Configuration conf, int rowUpperLimit) {
     Scan scan = new Scan();
-    int scannerCaching = connection.getConfiguration().getInt(HConstants.HBASE_META_SCANNER_CACHING,
+    int scannerCaching = conf.getInt(HConstants.HBASE_META_SCANNER_CACHING,
       HConstants.DEFAULT_HBASE_META_SCANNER_CACHING);
-    if (connection.getConfiguration().getBoolean(HConstants.USE_META_REPLICAS,
-      HConstants.DEFAULT_USE_META_REPLICAS)) {
+    if (conf.getBoolean(HConstants.USE_META_REPLICAS, HConstants.DEFAULT_USE_META_REPLICAS)) {
       scan.setConsistency(Consistency.TIMELINE);
     }
     if (rowUpperLimit > 0) {
@@ -471,7 +465,7 @@ public final class MetaTableAccessor {
     @Nullable final byte[] stopRow, QueryType type, @Nullable Filter filter, int maxRows,
     final ClientMetaTableAccessor.Visitor visitor) throws IOException {
     int rowUpperLimit = maxRows > 0 ? maxRows : Integer.MAX_VALUE;
-    Scan scan = getMetaScan(connection, rowUpperLimit);
+    Scan scan = getMetaScan(connection.getConfiguration(), rowUpperLimit);
 
     for (byte[] family : type.getFamilies()) {
       scan.addFamily(family);
@@ -527,7 +521,7 @@ public final class MetaTableAccessor {
   private static RegionInfo getClosestRegionInfo(Connection connection,
     @NonNull final TableName tableName, @NonNull final byte[] row) throws IOException {
     byte[] searchRow = RegionInfo.createRegionName(tableName, row, HConstants.NINES, false);
-    Scan scan = getMetaScan(connection, 1);
+    Scan scan = getMetaScan(connection.getConfiguration(), 1);
     scan.setReversed(true);
     scan.withStartRow(searchRow);
     try (ResultScanner resultScanner = getMetaHTable(connection).getScanner(scan)) {
@@ -735,37 +729,6 @@ public final class MetaTableAccessor {
     }
   }
 
-  /**
-   * Deletes some replica columns corresponding to replicas for the passed rows
-   * @param metaRows rows in hbase:meta
-   * @param replicaIndexToDeleteFrom the replica ID we would start deleting from
-   * @param numReplicasToRemove how many replicas to remove
-   * @param connection connection we're using to access meta table
-   */
-  public static void removeRegionReplicasFromMeta(Set<byte[]> metaRows,
-    int replicaIndexToDeleteFrom, int numReplicasToRemove, Connection connection)
-    throws IOException {
-    int absoluteIndex = replicaIndexToDeleteFrom + numReplicasToRemove;
-    for (byte[] row : metaRows) {
-      long now = EnvironmentEdgeManager.currentTime();
-      Delete deleteReplicaLocations = new Delete(row);
-      for (int i = replicaIndexToDeleteFrom; i < absoluteIndex; i++) {
-        deleteReplicaLocations.addColumns(HConstants.CATALOG_FAMILY,
-          CatalogFamilyFormat.getServerColumn(i), now);
-        deleteReplicaLocations.addColumns(HConstants.CATALOG_FAMILY,
-          CatalogFamilyFormat.getSeqNumColumn(i), now);
-        deleteReplicaLocations.addColumns(HConstants.CATALOG_FAMILY,
-          CatalogFamilyFormat.getStartCodeColumn(i), now);
-        deleteReplicaLocations.addColumns(HConstants.CATALOG_FAMILY,
-          CatalogFamilyFormat.getServerNameColumn(i), now);
-        deleteReplicaLocations.addColumns(HConstants.CATALOG_FAMILY,
-          CatalogFamilyFormat.getRegionStateColumn(i), now);
-      }
-
-      deleteFromMetaTable(connection, deleteReplicaLocations);
-    }
-  }
-
   public static Put addRegionStateToPut(Put put, RegionState.State state) throws IOException {
     put.add(CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY).setRow(put.getRow())
       .setFamily(HConstants.CATALOG_FAMILY).setQualifier(HConstants.STATE_QUALIFIER)
@@ -807,22 +770,6 @@ public final class MetaTableAccessor {
   }
 
   /**
-   * Adds a (single) hbase:meta row for the specified new region and its daughters. Note that this
-   * does not add its daughter's as different rows, but adds information about the daughters in the
-   * same row as the parent. Use
-   * {@link #splitRegion(Connection, RegionInfo, long, RegionInfo, RegionInfo, ServerName, int)} if
-   * you want to do that.
-   * @param connection connection we're using
-   * @param regionInfo region information
-   * @throws IOException if problem connecting or updating meta
-   */
-  @VisibleForTesting
-  public static void addRegionToMeta(Connection connection, RegionInfo regionInfo)
-    throws IOException {
-    addRegionsToMeta(connection, Collections.singletonList(regionInfo), 1);
-  }
-
-  /**
    * Adds a hbase:meta row for each of the specified new regions. Initial state for new regions is
    * CLOSED.
    * @param connection connection we're using
@@ -847,17 +794,18 @@ public final class MetaTableAccessor {
     int regionReplication, long ts) throws IOException {
     List<Put> puts = new ArrayList<>();
     for (RegionInfo regionInfo : regionInfos) {
-      if (RegionReplicaUtil.isDefaultReplica(regionInfo)) {
-        Put put = makePutFromRegionInfo(regionInfo, ts);
-        // New regions are added with initial state of CLOSED.
-        addRegionStateToPut(put, RegionState.State.CLOSED);
-        // Add empty locations for region replicas so that number of replicas can be cached
-        // whenever the primary region is looked up from meta
-        for (int i = 1; i < regionReplication; i++) {
-          addEmptyLocation(put, i);
-        }
-        puts.add(put);
+      if (!RegionReplicaUtil.isDefaultReplica(regionInfo)) {
+        continue;
       }
+      Put put = makePutFromRegionInfo(regionInfo, ts);
+      // New regions are added with initial state of CLOSED.
+      addRegionStateToPut(put, RegionState.State.CLOSED);
+      // Add empty locations for region replicas so that number of replicas can be cached
+      // whenever the primary region is looked up from meta
+      for (int i = 1; i < regionReplication; i++) {
+        addEmptyLocation(put, i);
+      }
+      puts.add(put);
     }
     putsToMetaTable(connection, puts);
     LOG.info("Added {} regions to meta.", puts.size());
@@ -910,7 +858,6 @@ public final class MetaTableAccessor {
    * @param sn Server name
    * @param masterSystemTime wall clock time from master if passed in the open region RPC
    */
-  @VisibleForTesting
   public static void updateRegionLocation(Connection connection, RegionInfo regionInfo,
     ServerName sn, long openSeqNum, long masterSystemTime) throws IOException {
     updateLocation(connection, regionInfo, sn, openSeqNum, masterSystemTime);

@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.ipc;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
@@ -26,25 +28,28 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
-import org.apache.hadoop.hbase.io.ByteBuffAllocator;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.hbase.exceptions.RegionMovedException;
+import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.io.ByteBufferListOutputStream;
 import org.apache.hadoop.hbase.ipc.RpcServer.CallCleanup;
 import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.trace.TraceUtil;
+import org.apache.hadoop.hbase.util.ByteBufferUtils;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.util.StringUtils;
+import org.apache.yetus.audience.InterfaceAudience;
+
 import org.apache.hbase.thirdparty.com.google.protobuf.BlockingService;
 import org.apache.hbase.thirdparty.com.google.protobuf.CodedOutputStream;
 import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
 import org.apache.hbase.thirdparty.com.google.protobuf.Message;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.VersionInfo;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.CellBlockMeta;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ExceptionResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.RequestHeader;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ResponseHeader;
-import org.apache.hadoop.hbase.util.ByteBufferUtils;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.util.StringUtils;
 
 /**
  * Datastructure that holds all necessary to a method invocation and then afterward, carries
@@ -97,6 +102,8 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
   // the current implementation. We should fix this in the future.
   private final AtomicInteger reference = new AtomicInteger(0b01);
 
+  private final Span span;
+
   @edu.umd.cs.findbugs.annotations.SuppressWarnings(value = "NP_NULL_ON_SOME_PATH",
       justification = "Can't figure why this complaint is happening... see below")
   ServerCall(int id, BlockingService service, MethodDescriptor md, RequestHeader header,
@@ -127,6 +134,7 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
     this.bbAllocator = byteBuffAllocator;
     this.cellBlockBuilder = cellBlockBuilder;
     this.reqCleanup = reqCleanup;
+    this.span = Span.current();
   }
 
   /**
@@ -145,6 +153,7 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
     // If the call was run successfuly, we might have already returned the BB
     // back to pool. No worries..Then inputCellBlock will be null
     cleanup();
+    span.end();
   }
 
   private void release(int mask) {
@@ -217,10 +226,17 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
   }
 
   @Override
-  public synchronized void setResponse(Message m, final CellScanner cells,
-      Throwable t, String errorMsg) {
-    if (this.isError) return;
-    if (t != null) this.isError = true;
+  public synchronized void setResponse(Message m, final CellScanner cells, Throwable t,
+    String errorMsg) {
+    if (this.isError) {
+      return;
+    }
+    if (t != null) {
+      this.isError = true;
+      TraceUtil.setError(span, t);
+    } else {
+      span.setStatus(StatusCode.OK);
+    }
     BufferChain bc = null;
     try {
       ResponseHeader.Builder headerBuilder = ResponseHeader.newBuilder();
@@ -275,9 +291,6 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
         }
       }
       bc = new BufferChain(responseBufs);
-      if (connection.useWrap) {
-        bc = wrapWithSasl(bc);
-      }
     } catch (IOException e) {
       RpcServer.LOG.warn("Exception while creating response " + e);
     }
@@ -385,9 +398,10 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
     return pbBuf;
   }
 
-  protected BufferChain wrapWithSasl(BufferChain bc)
-      throws IOException {
-    if (!this.connection.useSasl) return bc;
+  protected BufferChain wrapWithSasl(BufferChain bc) throws IOException {
+    if (!this.connection.useSasl) {
+      return bc;
+    }
     // Looks like no way around this; saslserver wants a byte array.  I have to make it one.
     // THIS IS A BIG UGLY COPY.
     byte [] responseBytes = bc.getBytes();
@@ -540,6 +554,24 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
 
   @Override
   public synchronized BufferChain getResponse() {
-    return response;
+    if (connection.useWrap) {
+      /*
+       * wrapping result with SASL as the last step just before sending it out, so
+       * every message must have the right increasing sequence number
+       */
+      try {
+        return wrapWithSasl(response);
+      } catch (IOException e) {
+        /* it is exactly the same what setResponse() does */
+        RpcServer.LOG.warn("Exception while creating response " + e);
+        return null;
+      }
+    } else {
+      return response;
+    }
+  }
+
+  public Span getSpan() {
+    return span;
   }
 }

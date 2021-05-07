@@ -24,7 +24,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +32,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.Future;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.commons.lang3.StringUtils;
@@ -78,6 +78,7 @@ import org.apache.hadoop.hbase.protobuf.ProtobufMagic;
 import org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FutureUtils;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
@@ -88,7 +89,6 @@ import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
@@ -100,6 +100,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.MutateRowsRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.MutateRowsResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RSGroupProtos;
+
 /**
  * This is an implementation of {@link RSGroupInfoManager} which makes use of an HBase table as the
  * persistence store for the group information. It also makes use of zookeeper to store group
@@ -124,31 +125,24 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
   private static final Logger LOG = LoggerFactory.getLogger(RSGroupInfoManagerImpl.class);
 
   // Assigned before user tables
-  @VisibleForTesting
   static final TableName RSGROUP_TABLE_NAME =
       TableName.valueOf(NamespaceDescriptor.SYSTEM_NAMESPACE_NAME_STR, "rsgroup");
 
-  @VisibleForTesting
   static final String KEEP_ONE_SERVER_IN_DEFAULT_ERROR_MESSAGE = "should keep at least " +
       "one server in 'default' RSGroup.";
 
   /** Define the config key of retries threshold when movements failed */
-  @VisibleForTesting
   static final String FAILED_MOVE_MAX_RETRY = "hbase.rsgroup.move.max.retry";
 
   /** Define the default number of retries */
-  @VisibleForTesting
   static final int DEFAULT_MAX_RETRY_VALUE = 50;
 
   private static final String RS_GROUP_ZNODE = "rsgroup";
 
-  @VisibleForTesting
   static final byte[] META_FAMILY_BYTES = Bytes.toBytes("m");
 
-  @VisibleForTesting
   static final byte[] META_QUALIFIER_BYTES = Bytes.toBytes("i");
 
-  @VisibleForTesting
   static final String MIGRATE_THREAD_NAME = "Migrate-RSGroup-Tables";
 
   private static final byte[] ROW_KEY = { 0 };
@@ -326,6 +320,7 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
       String dstGroup) throws IOException {
     RSGroupInfo src = getRSGroupInfo(srcGroup);
     RSGroupInfo dst = getRSGroupInfo(dstGroup);
+    Set<Address> movedServers = new HashSet<>();
     // If destination is 'default' rsgroup, only add servers that are online. If not online, drop
     // it. If not 'default' group, add server to 'dst' rsgroup EVEN IF IT IS NOT online (could be a
     // rsgroup of dead servers that are to come back later).
@@ -342,12 +337,13 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
         }
       }
       dst.addServer(el);
+      movedServers.add(el);
     }
     Map<String, RSGroupInfo> newGroupMap = Maps.newHashMap(holder.groupName2Group);
     newGroupMap.put(src.getName(), src);
     newGroupMap.put(dst.getName(), dst);
     flushConfig(newGroupMap);
-    return dst.getServers();
+    return movedServers;
   }
 
   @Override
@@ -471,7 +467,7 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
         }
         for (String znode : children) {
           byte[] data = ZKUtil.getData(watcher, ZNodePaths.joinZNode(groupBasePath, znode));
-          if (data.length > 0) {
+          if (data != null && data.length > 0) {
             ProtobufUtil.expectPBMagicPrefix(data);
             ByteArrayInputStream bis =
               new ByteArrayInputStream(data, ProtobufUtil.lengthOfPBMagic(), data.length);
@@ -956,84 +952,129 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
   /**
    * Move every region from servers which are currently located on these servers, but should not be
    * located there.
-   * @param servers the servers that will move to new group
-   * @param targetGroupName the target group name
+   * @param movedServers  the servers that are moved to new group
+   * @param srcGrpServers all servers in the source group, excluding the movedServers
+   * @param targetGroupName the target group
+   * @param sourceGroupName the source group
    * @throws IOException if moving the server and tables fail
    */
-  private void moveServerRegionsFromGroup(Set<Address> servers, String targetGroupName)
-      throws IOException {
-    moveRegionsBetweenGroups(servers, targetGroupName, rs -> getRegions(rs), info -> {
-      try {
-        String groupName = RSGroupUtil.getRSGroupInfo(masterServices, this, info.getTable())
+  private void moveServerRegionsFromGroup(Set<Address> movedServers, Set<Address> srcGrpServers,
+    String targetGroupName, String sourceGroupName) throws IOException {
+    moveRegionsBetweenGroups(movedServers, srcGrpServers, targetGroupName, sourceGroupName,
+    rs -> getRegions(rs), info -> {
+        try {
+          String groupName = RSGroupUtil.getRSGroupInfo(masterServices, this, info.getTable())
             .map(RSGroupInfo::getName).orElse(RSGroupInfo.DEFAULT_GROUP);
-        return groupName.equals(targetGroupName);
-      } catch (IOException e) {
-        LOG.warn("Failed to test group for region {} and target group {}", info, targetGroupName);
-        return false;
-      }
-    }, rs -> rs.getHostname());
+          return groupName.equals(targetGroupName);
+        } catch (IOException e) {
+          LOG.warn("Failed to test group for region {} and target group {}", info,
+            targetGroupName);
+          return false;
+        }
+      });
   }
 
-  private <T> void moveRegionsBetweenGroups(Set<T> regionsOwners, String targetGroupName,
-      Function<T, List<RegionInfo>> getRegionsInfo, Function<RegionInfo, Boolean> validation,
-      Function<T, String> getOwnerName) throws IOException {
-    boolean hasRegionsToMove;
+  private <T> void moveRegionsBetweenGroups(Set<T> regionsOwners, Set<Address> newRegionsOwners,
+    String targetGroupName, String sourceGroupName, Function<T, List<RegionInfo>> getRegionsInfo,
+    Function<RegionInfo, Boolean> validation) throws IOException {
+    // Get server names corresponding to given Addresses
+    List<ServerName> movedServerNames = new ArrayList<>(regionsOwners.size());
+    List<ServerName> srcGrpServerNames = new ArrayList<>(newRegionsOwners.size());
+    for (ServerName serverName : masterServices.getServerManager().getOnlineServers().keySet()) {
+      // In case region move failed in previous attempt, regionsOwners and newRegionsOwners
+      // can have the same servers. So for all servers below both conditions to be checked
+      if (newRegionsOwners.contains(serverName.getAddress())) {
+        srcGrpServerNames.add(serverName);
+      }
+      if (regionsOwners.contains(serverName.getAddress())) {
+        movedServerNames.add(serverName);
+      }
+    }
+    List<Pair<RegionInfo, Future<byte[]>>> assignmentFutures = new ArrayList<>();
     int retry = 0;
-    Set<T> allOwners = new HashSet<>(regionsOwners);
     Set<String> failedRegions = new HashSet<>();
     IOException toThrow = null;
     do {
-      hasRegionsToMove = false;
-      for (Iterator<T> iter = allOwners.iterator(); iter.hasNext(); ) {
-        T owner = iter.next();
+      assignmentFutures.clear();
+      failedRegions.clear();
+      for (ServerName owner : movedServerNames) {
         // Get regions that are associated with this server and filter regions by group tables.
-        for (RegionInfo region : getRegionsInfo.apply(owner)) {
+        for (RegionInfo region : getRegionsInfo.apply((T) owner.getAddress())) {
           if (!validation.apply(region)) {
             LOG.info("Moving region {}, which do not belong to RSGroup {}",
-                region.getShortNameToLog(), targetGroupName);
-            try {
-              this.masterServices.getAssignmentManager().move(region);
-              failedRegions.remove(region.getRegionNameAsString());
-            } catch (IOException ioe) {
-              LOG.debug("Move region {} from group failed, will retry, current retry time is {}",
-                  region.getShortNameToLog(), retry, ioe);
-              toThrow = ioe;
+              region.getShortNameToLog(), targetGroupName);
+            // Move region back to source RSGroup servers
+            ServerName dest =
+              masterServices.getLoadBalancer().randomAssignment(region, srcGrpServerNames);
+            if (dest == null) {
               failedRegions.add(region.getRegionNameAsString());
-            }
-            if (masterServices.getAssignmentManager().getRegionStates().
-                getRegionState(region).isFailedOpen()) {
               continue;
             }
-            hasRegionsToMove = true;
+            RegionPlan rp = new RegionPlan(region, owner, dest);
+            try {
+              Future<byte[]> future = masterServices.getAssignmentManager().moveAsync(rp);
+              assignmentFutures.add(Pair.newPair(region, future));
+            } catch (IOException ioe) {
+              failedRegions.add(region.getRegionNameAsString());
+              LOG.debug("Move region {} failed, will retry, current retry time is {}",
+                region.getShortNameToLog(), retry, ioe);
+              toThrow = ioe;
+            }
           }
         }
-
-        if (!hasRegionsToMove) {
-          LOG.info("No more regions to move from {} to RSGroup", getOwnerName.apply(owner));
-          iter.remove();
+      }
+      waitForRegionMovement(assignmentFutures, failedRegions, sourceGroupName, retry);
+      if (failedRegions.isEmpty()) {
+        LOG.info("All regions from {} are moved back to {}", movedServerNames, sourceGroupName);
+        return;
+      } else {
+        try {
+          wait(1000);
+        } catch (InterruptedException e) {
+          LOG.warn("Sleep interrupted", e);
+          Thread.currentThread().interrupt();
         }
+        retry++;
       }
-
-      retry++;
-      try {
-        wait(1000);
-      } catch (InterruptedException e) {
-        LOG.warn("Sleep interrupted", e);
-        Thread.currentThread().interrupt();
-      }
-    } while (hasRegionsToMove && retry <=
-        masterServices.getConfiguration().getInt(FAILED_MOVE_MAX_RETRY, DEFAULT_MAX_RETRY_VALUE));
+    } while (!failedRegions.isEmpty() && retry <= masterServices.getConfiguration()
+      .getInt(FAILED_MOVE_MAX_RETRY, DEFAULT_MAX_RETRY_VALUE));
 
     //has up to max retry time or there are no more regions to move
-    if (hasRegionsToMove) {
+    if (!failedRegions.isEmpty()) {
       // print failed moved regions, for later process conveniently
       String msg = String
-          .format("move regions for group %s failed, failed regions: %s", targetGroupName,
-              failedRegions);
+        .format("move regions for group %s failed, failed regions: %s", sourceGroupName,
+          failedRegions);
       LOG.error(msg);
       throw new DoNotRetryIOException(
-          msg + ", just record the last failed region's cause, more details in server log",
-          toThrow);
+        msg + ", just record the last failed region's cause, more details in server log", toThrow);
+    }
+  }
+
+  /**
+   * Wait for all the region move to complete. Keep waiting for other region movement
+   * completion even if some region movement fails.
+   */
+  private void waitForRegionMovement(List<Pair<RegionInfo, Future<byte[]>>> regionMoveFutures,
+    Set<String> failedRegions, String sourceGroupName, int retryCount) {
+    LOG.info("Moving {} region(s) to group {}, current retry={}", regionMoveFutures.size(),
+      sourceGroupName, retryCount);
+    for (Pair<RegionInfo, Future<byte[]>> pair : regionMoveFutures) {
+      try {
+        pair.getSecond().get();
+        if (masterServices.getAssignmentManager().getRegionStates().
+          getRegionState(pair.getFirst()).isFailedOpen()) {
+          failedRegions.add(pair.getFirst().getRegionNameAsString());
+        }
+      } catch (InterruptedException e) {
+        //Dont return form there lets wait for other regions to complete movement.
+        failedRegions.add(pair.getFirst().getRegionNameAsString());
+        LOG.warn("Sleep interrupted", e);
+      } catch (Exception e) {
+        failedRegions.add(pair.getFirst().getRegionNameAsString());
+        LOG.error("Move region {} to group {} failed, will retry on next attempt",
+          pair.getFirst().getShortNameToLog(), sourceGroupName, e);
+      }
     }
   }
 
@@ -1072,7 +1113,6 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
    * parent region cases. This method is invoked by {@link #balanceRSGroup}
    * @return A clone of current assignments for this group.
    */
-  @VisibleForTesting
   Map<TableName, Map<ServerName, List<RegionInfo>>> getRSGroupAssignmentsByTable(
     TableStateManager tableStateManager, String groupName) throws IOException {
     Map<TableName, Map<ServerName, List<RegionInfo>>> result = Maps.newHashMap();
@@ -1185,7 +1225,6 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
     if (StringUtils.isEmpty(targetGroupName)) {
       throw new ConstraintException("RSGroup cannot be null.");
     }
-    getRSGroupInfo(targetGroupName);
 
     // Hold a lock on the manager instance while moving servers to prevent
     // another writer changing our state while we are working.
@@ -1194,9 +1233,9 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
       Address firstServer = servers.iterator().next();
       RSGroupInfo srcGrp = getRSGroupOfServer(firstServer);
       if (srcGrp == null) {
-        // Be careful. This exception message is tested for in TestRSGroupsBase...
-        throw new ConstraintException("Source RSGroup for server " + firstServer
-            + " does not exist.");
+        // Be careful. This exception message is tested for in TestRSGroupAdmin2...
+        throw new ConstraintException("Server " + firstServer
+          + " is either offline or it does not exist.");
       }
 
       // Only move online servers (when moving from 'default') or servers from other
@@ -1230,7 +1269,7 @@ final class RSGroupInfoManagerImpl implements RSGroupInfoManager {
       // MovedServers may be < passed in 'servers'.
       Set<Address> movedServers = moveServers(servers, srcGrp.getName(),
           targetGroupName);
-      moveServerRegionsFromGroup(movedServers, targetGroupName);
+      moveServerRegionsFromGroup(movedServers, srcGrp.getServers(), targetGroupName, srcGrp.getName());
       LOG.info("Move servers done: {} => {}", srcGrp.getName(), targetGroupName);
     }
   }

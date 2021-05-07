@@ -235,37 +235,26 @@ class MetricsRegionServerWrapperImpl
 
   @Override
   public int getSplitQueueSize() {
-    if (this.regionServer.compactSplitThread == null) {
-      return 0;
-    }
-    return this.regionServer.compactSplitThread.getSplitQueueSize();
+    final CompactSplit compactSplit = regionServer.getCompactSplitThread();
+    return compactSplit == null ? 0 : compactSplit.getSplitQueueSize();
   }
 
   @Override
   public int getCompactionQueueSize() {
-    //The thread could be zero.  if so assume there is no queue.
-    if (this.regionServer.compactSplitThread == null) {
-      return 0;
-    }
-    return this.regionServer.compactSplitThread.getCompactionQueueSize();
+    final CompactSplit compactSplit = regionServer.getCompactSplitThread();
+    return compactSplit == null ? 0 : compactSplit.getCompactionQueueSize();
   }
 
   @Override
   public int getSmallCompactionQueueSize() {
-    //The thread could be zero.  if so assume there is no queue.
-    if (this.regionServer.compactSplitThread == null) {
-      return 0;
-    }
-    return this.regionServer.compactSplitThread.getSmallCompactionQueueSize();
+    final CompactSplit compactSplit = regionServer.getCompactSplitThread();
+    return compactSplit == null ? 0 : compactSplit.getSmallCompactionQueueSize();
   }
 
   @Override
   public int getLargeCompactionQueueSize() {
-    //The thread could be zero.  if so assume there is no queue.
-    if (this.regionServer.compactSplitThread == null) {
-      return 0;
-    }
-    return this.regionServer.compactSplitThread.getLargeCompactionQueueSize();
+    final CompactSplit compactSplit = regionServer.getCompactSplitThread();
+    return compactSplit == null ? 0 : compactSplit.getLargeCompactionQueueSize();
   }
 
   @Override
@@ -496,6 +485,11 @@ class MetricsRegionServerWrapperImpl
   @Override
   public long getRpcScanRequestsCount() {
     return regionServer.rpcServices.rpcScanRequestCount.sum();
+  }
+
+  @Override
+  public long getRpcFullScanRequestsCount() {
+    return regionServer.rpcServices.rpcFullScanRequestCount.sum();
   }
 
   @Override
@@ -856,7 +850,7 @@ class MetricsRegionServerWrapperImpl
         numWALFiles = (provider == null ? 0 : provider.getNumLogFiles()) +
             (metaProvider == null ? 0 : metaProvider.getNumLogFiles());
         walFileSize = (provider == null ? 0 : provider.getLogFileSize()) +
-            (provider == null ? 0 : provider.getLogFileSize());
+          (metaProvider == null ? 0 : metaProvider.getLogFileSize());
         // Copy over computed values so that no thread sees half computed values.
         numStores = tempNumStores;
         numStoreFiles = tempNumStoreFiles;

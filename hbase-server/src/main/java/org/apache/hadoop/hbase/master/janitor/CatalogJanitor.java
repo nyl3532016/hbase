@@ -60,8 +60,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 /**
  * A janitor for the catalog tables. Scans the <code>hbase:meta</code> catalog table on a period.
  * Makes a lastReport on state of hbase:meta. Looks for unused regions to garbage collect. Scan of
@@ -75,6 +73,8 @@ import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesti
 // TODO: Do more by way of 'repair'; see note on unknownServers below.
 @InterfaceAudience.Private
 public class CatalogJanitor extends ScheduledChore {
+
+  public static final int DEFAULT_HBASE_CATALOGJANITOR_INTERVAL = 300 * 1000;
 
   private static final Logger LOG = LoggerFactory.getLogger(CatalogJanitor.class.getName());
 
@@ -90,7 +90,8 @@ public class CatalogJanitor extends ScheduledChore {
 
   public CatalogJanitor(final MasterServices services) {
     super("CatalogJanitor-" + services.getServerName().toShortString(), services,
-      services.getConfiguration().getInt("hbase.catalogjanitor.interval", 300000));
+      services.getConfiguration().getInt("hbase.catalogjanitor.interval",
+        DEFAULT_HBASE_CATALOGJANITOR_INTERVAL));
     this.services = services;
   }
 
@@ -160,23 +161,30 @@ public class CatalogJanitor extends ScheduledChore {
     int gcs = 0;
     try {
       if (!alreadyRunning.compareAndSet(false, true)) {
-        LOG.debug("CatalogJanitor already running");
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("CatalogJanitor already running");
+        }
         // -1 indicates previous scan is in progress
         return -1;
       }
       this.lastReport = scanForReport();
       if (!this.lastReport.isEmpty()) {
         LOG.warn(this.lastReport.toString());
+      } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug(this.lastReport.toString());
+        }
       }
 
-      if (isRIT(this.services.getAssignmentManager())) {
-        LOG.warn("Playing-it-safe skipping merge/split gc'ing of regions from hbase:meta while " +
-          "regions-in-transition (RIT)");
-      }
+      updateAssignmentManagerMetrics();
+
       Map<RegionInfo, Result> mergedRegions = this.lastReport.mergedRegions;
       for (Map.Entry<RegionInfo, Result> e : mergedRegions.entrySet()) {
         if (this.services.isInMaintenanceMode()) {
           // Stop cleaning if the master is in maintenance mode
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("In maintenence mode, not cleaning");
+          }
           break;
         }
 
@@ -193,6 +201,9 @@ public class CatalogJanitor extends ScheduledChore {
       for (Map.Entry<RegionInfo, Result> e : splitParents.entrySet()) {
         if (this.services.isInMaintenanceMode()) {
           // Stop cleaning if the master is in maintenance mode
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("In maintenence mode, not cleaning");
+          }
           break;
         }
 
@@ -218,7 +229,6 @@ public class CatalogJanitor extends ScheduledChore {
    * @return Return generated {@link Report}
    */
   // will be override in tests.
-  @VisibleForTesting
   protected Report scanForReport() throws IOException {
     ReportMakingVisitor visitor = new ReportMakingVisitor(this.services);
     // Null tablename means scan all of meta.
@@ -241,6 +251,9 @@ public class CatalogJanitor extends ScheduledChore {
    */
   private boolean cleanMergeRegion(final RegionInfo mergedRegion, List<RegionInfo> parents)
     throws IOException {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Cleaning merged region {}", mergedRegion);
+    }
     FileSystem fs = this.services.getMasterFileSystem().getFileSystem();
     Path rootdir = this.services.getMasterFileSystem().getRootDir();
     Path tabledir = CommonFSUtils.getTableDir(rootdir, mergedRegion.getTable());
@@ -253,18 +266,19 @@ public class CatalogJanitor extends ScheduledChore {
       LOG.warn("Merged region does not exist: " + mergedRegion.getEncodedName());
     }
     if (regionFs == null || !regionFs.hasReferences(htd)) {
-      LOG.debug(
-        "Deleting parents ({}) from fs; merged child {} no longer holds references", parents
-          .stream().map(r -> RegionInfo.getShortNameToLog(r)).collect(Collectors.joining(", ")),
-        mergedRegion);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug(
+          "Deleting parents ({}) from fs; merged child {} no longer holds references", parents
+            .stream().map(r -> RegionInfo.getShortNameToLog(r)).collect(Collectors.joining(", ")),
+          mergedRegion);
+      }
       ProcedureExecutor<MasterProcedureEnv> pe = this.services.getMasterProcedureExecutor();
-      pe.submitProcedure(
-        new GCMultipleMergedRegionsProcedure(pe.getEnvironment(), mergedRegion, parents));
-      for (RegionInfo ri : parents) {
-        // The above scheduled GCMultipleMergedRegionsProcedure does the below.
-        // Do we need this?
-        this.services.getAssignmentManager().getRegionStates().deleteRegion(ri);
-        this.services.getServerManager().removeRegion(ri);
+      GCMultipleMergedRegionsProcedure mergeRegionProcedure =
+          new GCMultipleMergedRegionsProcedure(pe.getEnvironment(), mergedRegion, parents);
+      pe.submitProcedure(mergeRegionProcedure);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Submitted procedure {} for merged region {}", mergeRegionProcedure,
+          mergedRegion);
       }
       return true;
     }
@@ -304,12 +318,17 @@ public class CatalogJanitor extends ScheduledChore {
     }
   }
 
-  @VisibleForTesting
   static boolean cleanParent(MasterServices services, RegionInfo parent, Result rowContent)
     throws IOException {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Cleaning parent region {}", parent);
+    }
     // Check whether it is a merged region and if it is clean of references.
     if (CatalogFamilyFormat.hasMergeRegions(rowContent.rawCells())) {
       // Wait until clean of merge parent regions first
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Region {} has merge parents, cleaning them first", parent);
+      }
       return false;
     }
     // Run checks on each daughter split.
@@ -321,14 +340,28 @@ public class CatalogJanitor extends ScheduledChore {
         daughters.getFirst() != null ? daughters.getFirst().getShortNameToLog() : "null";
       String daughterB =
         daughters.getSecond() != null ? daughters.getSecond().getShortNameToLog() : "null";
-      LOG.debug("Deleting region " + parent.getShortNameToLog() + " because daughters -- " +
-        daughterA + ", " + daughterB + " -- no longer hold references");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Deleting region " + parent.getShortNameToLog() + " because daughters -- " +
+          daughterA + ", " + daughterB + " -- no longer hold references");
+      }
       ProcedureExecutor<MasterProcedureEnv> pe = services.getMasterProcedureExecutor();
-      pe.submitProcedure(new GCRegionProcedure(pe.getEnvironment(), parent));
-      // Remove from in-memory states
-      services.getAssignmentManager().getRegionStates().deleteRegion(parent);
-      services.getServerManager().removeRegion(parent);
+      GCRegionProcedure gcRegionProcedure = new GCRegionProcedure(pe.getEnvironment(), parent);
+      pe.submitProcedure(gcRegionProcedure);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Submitted procedure {} for split parent {}", gcRegionProcedure, parent);
+      }
       return true;
+    } else {
+      if (LOG.isDebugEnabled()) {
+        if (!hasNoReferences(a)) {
+          LOG.debug("Deferring removal of region {} because daughter {} still has references",
+            parent, daughters.getFirst());
+        }
+        if (!hasNoReferences(b)) {
+          LOG.debug("Deferring removal of region {} because daughter {} still has references",
+            parent, daughters.getSecond());
+        }
+      }
     }
     return false;
   }
@@ -409,11 +442,21 @@ public class CatalogJanitor extends ScheduledChore {
     return this.services.getTableDescriptors().get(tableName);
   }
 
+  private void updateAssignmentManagerMetrics() {
+    services.getAssignmentManager().getAssignmentManagerMetrics()
+        .updateHoles(lastReport.getHoles().size());
+    services.getAssignmentManager().getAssignmentManagerMetrics()
+        .updateOverlaps(lastReport.getOverlaps().size());
+    services.getAssignmentManager().getAssignmentManagerMetrics()
+        .updateUnknownServerRegions(lastReport.getUnknownServers().size());
+    services.getAssignmentManager().getAssignmentManagerMetrics()
+        .updateEmptyRegionInfoRegions(lastReport.getEmptyRegionInfo().size());
+  }
+
   private static void checkLog4jProperties() {
     String filename = "log4j.properties";
-    try {
-      final InputStream inStream =
-        CatalogJanitor.class.getClassLoader().getResourceAsStream(filename);
+    try (final InputStream inStream =
+      CatalogJanitor.class.getClassLoader().getResourceAsStream(filename)) {
       if (inStream != null) {
         new Properties().load(inStream);
       } else {
