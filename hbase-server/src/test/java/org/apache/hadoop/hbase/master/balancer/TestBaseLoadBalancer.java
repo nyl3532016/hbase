@@ -20,6 +20,8 @@ package org.apache.hadoop.hbase.master.balancer;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -47,8 +49,6 @@ import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.RackManager;
 import org.apache.hadoop.hbase.master.RegionPlan;
 import org.apache.hadoop.hbase.master.ServerManager;
-import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer.Cluster;
-import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer.Cluster.MoveRegionAction;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.net.DNSToSwitchMapping;
@@ -58,7 +58,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
-import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,7 +70,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestBaseLoadBalancer.class);
 
-  private static LoadBalancer loadBalancer;
+  private static MockBalancer loadBalancer;
   private static final Logger LOG = LoggerFactory.getLogger(TestBaseLoadBalancer.class);
   private static final ServerName master = ServerName.valueOf("fake-master", 0, 1L);
   private static RackManager rackManager;
@@ -93,51 +92,33 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     Configuration conf = HBaseConfiguration.create();
     conf.setClass("hbase.util.ip.to.rack.determiner", MockMapping.class, DNSToSwitchMapping.class);
     loadBalancer = new MockBalancer();
-    loadBalancer.setConf(conf);
-    MasterServices st = Mockito.mock(MasterServices.class);
-    Mockito.when(st.getServerName()).thenReturn(master);
+    MasterServices st = mock(MasterServices.class);
+    when(st.getServerName()).thenReturn(master);
+    when(st.getConfiguration()).thenReturn(conf);
     loadBalancer.setMasterServices(st);
 
     // Set up the rack topologies (5 machines per rack)
-    rackManager = Mockito.mock(RackManager.class);
+    rackManager = mock(RackManager.class);
     for (int i = 0; i < NUM_SERVERS; i++) {
       servers[i] = ServerName.valueOf("foo"+i+":1234",-1);
       if (i < 5) {
-        Mockito.when(rackManager.getRack(servers[i])).thenReturn("rack1");
+        when(rackManager.getRack(servers[i])).thenReturn("rack1");
       }
       if (i >= 5 && i < 10) {
-        Mockito.when(rackManager.getRack(servers[i])).thenReturn("rack2");
+        when(rackManager.getRack(servers[i])).thenReturn("rack2");
       }
       if (i >= 10) {
-        Mockito.when(rackManager.getRack(servers[i])).thenReturn("rack3");
+        when(rackManager.getRack(servers[i])).thenReturn("rack3");
       }
     }
   }
 
   public static class MockBalancer extends BaseLoadBalancer {
-    @Override
-    public List<RegionPlan>
-        balanceCluster(Map<TableName, Map<ServerName, List<RegionInfo>>> loadOfAllTable) {
-      return null;
-    }
 
     @Override
-    public List<RegionPlan> balanceTable(TableName tableName,
+    protected List<RegionPlan> balanceTable(TableName tableName,
         Map<ServerName, List<RegionInfo>> loadOfOneTable) {
       return null;
-    }
-  }
-
-  /**
-   * All regions have an assignment.
-   * @param regions
-   * @param servers
-   * @param assignments
-   */
-  private void assertImmediateAssignment(List<RegionInfo> regions, List<ServerName> servers,
-      Map<RegionInfo, ServerName> assignments) {
-    for (RegionInfo region : regions) {
-      assertTrue(assignments.containsKey(region));
     }
   }
 
@@ -251,12 +232,11 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     };
     Configuration conf = HBaseConfiguration.create();
     conf.setClass("hbase.util.ip.to.rack.determiner", MockMapping.class, DNSToSwitchMapping.class);
-    balancer.setConf(conf);
-    ServerManager sm = Mockito.mock(ServerManager.class);
-    Mockito.when(sm.getOnlineServersListWithPredicator(allServers, BaseLoadBalancer.IDLE_SERVER_PREDICATOR))
-           .thenReturn(idleServers);
-    MasterServices services = Mockito.mock(MasterServices.class);
-    Mockito.when(services.getServerManager()).thenReturn(sm);
+    ServerManager sm = mock(ServerManager.class);
+    when(sm.getOnlineServersListWithPredicator(anyList(), any())).thenReturn(idleServers);
+    MasterServices services = mock(MasterServices.class);
+    when(services.getServerManager()).thenReturn(sm);
+    when(services.getConfiguration()).thenReturn(conf);
     balancer.setMasterServices(services);
     RegionInfo hri1 = RegionInfoBuilder.newBuilder(TableName.valueOf(name.getMethodName()))
         .setStartKey("key1".getBytes())
@@ -264,7 +244,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
         .setSplit(false)
         .setRegionId(100)
         .build();
-    assertNull(balancer.randomAssignment(hri1, Collections.EMPTY_LIST));
+    assertNull(balancer.randomAssignment(hri1, Collections.emptyList()));
     assertNull(balancer.randomAssignment(hri1, null));
     for (int i = 0; i != 3; ++i) {
       ServerName sn = balancer.randomAssignment(hri1, allServers);
@@ -309,7 +289,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     // cluster is created (constructor code) would make sure the indices of
     // the servers are in the order in which it is inserted in the clusterState
     // map (linkedhashmap is important). A similar thing applies to the region lists
-    Cluster cluster = new Cluster(clusterState, null, null, rackManager);
+    BalancerClusterState cluster = new BalancerClusterState(clusterState, null, null, rackManager);
     // check whether a move of region1 from servers[0] to servers[1] would lower
     // the availability of region1
     assertTrue(cluster.wouldLowerAvailability(hri1, servers[1]));
@@ -326,7 +306,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     // now lets have servers[1] host replica_of_region2
     list1.add(RegionReplicaUtil.getRegionInfoForReplica(hri3, 1));
     // create a new clusterState with the above change
-    cluster = new Cluster(clusterState, null, null, rackManager);
+    cluster = new BalancerClusterState(clusterState, null, null, rackManager);
     // now check whether a move of a replica from servers[0] to servers[1] would lower
     // the availability of region2
     assertTrue(cluster.wouldLowerAvailability(hri3, servers[1]));
@@ -338,14 +318,14 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     clusterState.put(servers[6], list2); //servers[6], rack2 hosts region2
     clusterState.put(servers[10], new ArrayList<>()); //servers[10], rack3 hosts no region
     // create a cluster with the above clusterState
-    cluster = new Cluster(clusterState, null, null, rackManager);
+    cluster = new BalancerClusterState(clusterState, null, null, rackManager);
     // check whether a move of region1 from servers[0],rack1 to servers[6],rack2 would
     // lower the availability
 
     assertTrue(cluster.wouldLowerAvailability(hri1, servers[0]));
 
     // now create a cluster without the rack manager
-    cluster = new Cluster(clusterState, null, null, null);
+    cluster = new BalancerClusterState(clusterState, null, null, null);
     // now repeat check whether a move of region1 from servers[0] to servers[6] would
     // lower the availability
     assertTrue(!cluster.wouldLowerAvailability(hri1, servers[6]));
@@ -383,7 +363,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     // cluster is created (constructor code) would make sure the indices of
     // the servers are in the order in which it is inserted in the clusterState
     // map (linkedhashmap is important).
-    Cluster cluster = new Cluster(clusterState, null, null, rackManager);
+    BalancerClusterState cluster = new BalancerClusterState(clusterState, null, null, rackManager);
     // check whether moving region1 from servers[1] to servers[2] would lower availability
     assertTrue(!cluster.wouldLowerAvailability(hri1, servers[2]));
 
@@ -405,7 +385,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     clusterState.put(servers[6], list2); //servers[6], rack2 hosts region2
     clusterState.put(servers[12], list3); //servers[12], rack3 hosts replica_of_region2
     // create a cluster with the above clusterState
-    cluster = new Cluster(clusterState, null, null, rackManager);
+    cluster = new BalancerClusterState(clusterState, null, null, rackManager);
     // check whether a move of replica_of_region2 from servers[12],rack3 to servers[0],rack1 would
     // lower the availability
     assertTrue(!cluster.wouldLowerAvailability(hri4, servers[0]));
@@ -487,15 +467,15 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     assignRegions(regions, oldServers, clusterState);
 
     // should not throw exception:
-    BaseLoadBalancer.Cluster cluster = new Cluster(clusterState, null, null, null);
+    BalancerClusterState cluster = new BalancerClusterState(clusterState, null, null, null);
     assertEquals(101 + 9, cluster.numRegions);
     assertEquals(10, cluster.numServers); // only 10 servers because they share the same host + port
 
     // test move
     ServerName sn = oldServers.get(0);
     int r0 = ArrayUtils.indexOf(cluster.regions, clusterState.get(sn).get(0));
-    int f0 = cluster.serversToIndex.get(sn.getHostAndPort());
-    int t0 = cluster.serversToIndex.get(servers.get(1).getHostAndPort());
+    int f0 = cluster.serversToIndex.get(sn.getAddress());
+    int t0 = cluster.serversToIndex.get(servers.get(1).getAddress());
     cluster.doAction(new MoveRegionAction(r0, f0, t0));
   }
 
@@ -533,22 +513,25 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
         Lists.newArrayList(servers.get(0), servers.get(1)));
     when(locationFinder.getTopBlockLocations(regions.get(42))).thenReturn(
         Lists.newArrayList(servers.get(4), servers.get(9), servers.get(5)));
-    when(locationFinder.getTopBlockLocations(regions.get(43))).thenReturn(
-        Lists.newArrayList(ServerName.valueOf("foo", 0, 0))); // this server does not exists in clusterStatus
+    // this server does not exists in clusterStatus
+    when(locationFinder.getTopBlockLocations(regions.get(43)))
+      .thenReturn(Lists.newArrayList(ServerName.valueOf("foo", 0, 0)));
 
-    BaseLoadBalancer.Cluster cluster = new Cluster(clusterState, null, locationFinder, null);
+    BalancerClusterState cluster =
+      new BalancerClusterState(clusterState, null, locationFinder, null);
 
-    int r0 = ArrayUtils.indexOf(cluster.regions, regions.get(0)); // this is ok, it is just a test
+    // this is ok, it is just a test
+    int r0 = ArrayUtils.indexOf(cluster.regions, regions.get(0));
     int r1 = ArrayUtils.indexOf(cluster.regions, regions.get(1));
     int r10 = ArrayUtils.indexOf(cluster.regions, regions.get(10));
     int r42 = ArrayUtils.indexOf(cluster.regions, regions.get(42));
     int r43 = ArrayUtils.indexOf(cluster.regions, regions.get(43));
 
-    int s0 = cluster.serversToIndex.get(servers.get(0).getHostAndPort());
-    int s1 = cluster.serversToIndex.get(servers.get(1).getHostAndPort());
-    int s4 = cluster.serversToIndex.get(servers.get(4).getHostAndPort());
-    int s5 = cluster.serversToIndex.get(servers.get(5).getHostAndPort());
-    int s9 = cluster.serversToIndex.get(servers.get(9).getHostAndPort());
+    int s0 = cluster.serversToIndex.get(servers.get(0).getAddress());
+    int s1 = cluster.serversToIndex.get(servers.get(1).getAddress());
+    int s4 = cluster.serversToIndex.get(servers.get(4).getAddress());
+    int s5 = cluster.serversToIndex.get(servers.get(5).getAddress());
+    int s9 = cluster.serversToIndex.get(servers.get(9).getAddress());
 
     // region 0 locations
     assertEquals(1, cluster.regionLocations[r0].length);

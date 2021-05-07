@@ -40,8 +40,11 @@ import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.exceptions.HBaseException;
+import org.apache.hadoop.hbase.rsgroup.RSGroupInfo;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.PrettyPrinter;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -190,6 +193,9 @@ public class TableDescriptorBuilder {
   private static final Bytes PRIORITY_KEY
           = new Bytes(Bytes.toBytes(PRIORITY));
 
+  private static final Bytes RSGROUP_KEY =
+      new Bytes(Bytes.toBytes(RSGroupInfo.TABLE_DESC_PROP_GROUP));
+
   /**
    * Relative priority of the table used for rpc scheduling
    */
@@ -246,6 +252,16 @@ public class TableDescriptorBuilder {
     DEFAULT_VALUES.keySet().stream()
             .map(s -> new Bytes(Bytes.toBytes(s))).forEach(RESERVED_KEYWORDS::add);
     RESERVED_KEYWORDS.add(IS_META_KEY);
+  }
+
+  public static PrettyPrinter.Unit getUnit(String key) {
+    switch (key) {
+      case MAX_FILESIZE:
+      case MEMSTORE_FLUSHSIZE:
+        return PrettyPrinter.Unit.BYTE;
+      default:
+        return PrettyPrinter.Unit.NONE;
+    }
   }
 
   @InterfaceAudience.Private
@@ -473,8 +489,19 @@ public class TableDescriptorBuilder {
     return this;
   }
 
+  public TableDescriptorBuilder setMaxFileSize(String maxFileSize) throws HBaseException {
+    desc.setMaxFileSize(maxFileSize);
+    return this;
+  }
+
   public TableDescriptorBuilder setMemStoreFlushSize(long memstoreFlushSize) {
     desc.setMemStoreFlushSize(memstoreFlushSize);
+    return this;
+  }
+
+  public TableDescriptorBuilder setMemStoreFlushSize(String memStoreFlushSize)
+    throws HBaseException {
+    desc.setMemStoreFlushSize(memStoreFlushSize);
     return this;
   }
 
@@ -568,6 +595,17 @@ public class TableDescriptorBuilder {
           desc.setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(cfDesc).setScope(scope)
               .build());
         });
+    return this;
+  }
+
+  /**
+   * Set the RSGroup for this table, specified RSGroup must exist before create or modify table.
+   *
+   * @param group rsgroup name
+   * @return a TableDescriptorBuilder
+   */
+  public TableDescriptorBuilder setRegionServerGroup(String group) {
+    desc.setValue(RSGROUP_KEY, group);
     return this;
   }
 
@@ -713,7 +751,7 @@ public class TableDescriptorBuilder {
               toBytesOrNull(value, Bytes::toBytes));
     }
 
-    /*
+    /**
      * @param key The key.
      * @param value The value. If null, removes the setting.
      */
@@ -722,14 +760,14 @@ public class TableDescriptorBuilder {
       return setValue(key, toBytesOrNull(value, Bytes::toBytes));
     }
 
-    /*
+    /**
      * Setter for storing metadata as a (key, value) pair in {@link #values} map
      *
      * @param key The key.
      * @param value The value. If null, removes the setting.
      */
     public ModifyableTableDescriptor setValue(final Bytes key, final Bytes value) {
-      if (value == null) {
+      if (value == null || value.getLength() == 0) {
         values.remove(key);
       } else {
         values.put(key, value);
@@ -1006,6 +1044,11 @@ public class TableDescriptorBuilder {
       return setValue(MAX_FILESIZE_KEY, Long.toString(maxFileSize));
     }
 
+    public ModifyableTableDescriptor setMaxFileSize(String maxFileSize) throws HBaseException {
+      return setMaxFileSize(Long.parseLong(PrettyPrinter.
+        valueOf(maxFileSize, PrettyPrinter.Unit.BYTE)));
+    }
+
     /**
      * Returns the size of the memstore after which a flush to filesystem is
      * triggered.
@@ -1029,6 +1072,12 @@ public class TableDescriptorBuilder {
      */
     public ModifyableTableDescriptor setMemStoreFlushSize(long memstoreFlushSize) {
       return setValue(MEMSTORE_FLUSHSIZE_KEY, Long.toString(memstoreFlushSize));
+    }
+
+    public ModifyableTableDescriptor setMemStoreFlushSize(String memStoreFlushSize)
+      throws HBaseException {
+      return setMemStoreFlushSize(Long.parseLong(PrettyPrinter.valueOf(memStoreFlushSize,
+        PrettyPrinter.Unit.BYTE)));
     }
 
     /**
@@ -1067,6 +1116,10 @@ public class TableDescriptorBuilder {
     public ModifyableTableDescriptor setColumnFamily(final ColumnFamilyDescriptor family) {
       if (family.getName() == null || family.getName().length <= 0) {
         throw new IllegalArgumentException("Family name cannot be null or empty");
+      }
+      int flength = family.getName() == null ? 0 : family.getName().length;
+      if (flength > Byte.MAX_VALUE) {
+        throw new IllegalArgumentException("The length of family name is bigger than " + Byte.MAX_VALUE);
       }
       if (hasColumnFamily(family.getName())) {
         throw new IllegalArgumentException("Family '"
@@ -1193,7 +1246,7 @@ public class TableDescriptorBuilder {
           printCommaForAttr = true;
           s.append(key);
           s.append(" => ");
-          s.append('\'').append(value).append('\'');
+          s.append('\'').append(PrettyPrinter.format(value, getUnit(key))).append('\'');
         }
 
         if (!userKeys.isEmpty()) {
@@ -1213,7 +1266,7 @@ public class TableDescriptorBuilder {
             printCommaForCfg = true;
             s.append('\'').append(key).append('\'');
             s.append(" => ");
-            s.append('\'').append(value).append('\'');
+            s.append('\'').append(PrettyPrinter.format(value, getUnit(key))).append('\'');
           }
           s.append("}");
         }
@@ -1612,6 +1665,16 @@ public class TableDescriptorBuilder {
     @Override
     public int getColumnFamilyCount() {
       return families.size();
+    }
+
+    @Override
+    public Optional<String> getRegionServerGroup() {
+      Bytes value = values.get(RSGROUP_KEY);
+      if (value != null) {
+        return Optional.of(Bytes.toString(value.get(), value.getOffset(), value.getLength()));
+      } else {
+        return Optional.empty();
+      }
     }
   }
 

@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder.ModifyableTableDescriptor;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.exceptions.HBaseException;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -451,6 +453,11 @@ public class HTableDescriptor implements TableDescriptor, Comparable<HTableDescr
     return this;
   }
 
+  public HTableDescriptor setMaxFileSize(String maxFileSize) throws HBaseException {
+    getDelegateeForModification().setMaxFileSize(maxFileSize);
+    return this;
+  }
+
   /**
    * Returns the size of the memstore after which a flush to filesystem is triggered.
    *
@@ -471,6 +478,11 @@ public class HTableDescriptor implements TableDescriptor, Comparable<HTableDescr
    */
   public HTableDescriptor setMemStoreFlushSize(long memstoreFlushSize) {
     getDelegateeForModification().setMemStoreFlushSize(memstoreFlushSize);
+    return this;
+  }
+
+  public HTableDescriptor setMemStoreFlushSize(String memStoreFlushSize) throws HBaseException {
+    getDelegateeForModification().setMemStoreFlushSize(memStoreFlushSize);
     return this;
   }
 
@@ -975,5 +987,10 @@ public class HTableDescriptor implements TableDescriptor, Comparable<HTableDescr
 
   protected ModifyableTableDescriptor getDelegateeForModification() {
     return delegatee;
+  }
+
+  @Override
+  public Optional<String> getRegionServerGroup() {
+    return delegatee.getRegionServerGroup();
   }
 }

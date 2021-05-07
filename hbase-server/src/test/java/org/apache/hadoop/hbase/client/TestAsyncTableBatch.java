@@ -19,11 +19,11 @@ package org.apache.hadoop.hbase.client;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -329,6 +329,57 @@ public class TestAsyncTableBatch {
       table.batch(
         Arrays.asList(new Put(Bytes.toBytes(0)).addColumn(FAMILY, CQ, new byte[MAX_KEY_VALUE_SIZE]),
           new Delete(Bytes.toBytes(0))));
+      fail("Should fail since the put exceeds the max key value size");
+    } catch (IllegalArgumentException e) {
+      assertThat(e.getMessage(), containsString("KeyValue size too large"));
+    }
+  }
+
+  @Test
+  public void testInvalidPutInRowMutations() throws IOException {
+    final byte[] row = Bytes.toBytes(0);
+
+    AsyncTable<?> table = tableGetter.apply(TABLE_NAME);
+    try {
+      table.batch(Arrays.asList(new Delete(row), new RowMutations(row)
+        .add((Mutation) new Put(row))));
+      fail("Should fail since the put does not contain any cells");
+    } catch (IllegalArgumentException e) {
+      assertThat(e.getMessage(), containsString("No columns to insert"));
+    }
+
+    try {
+      table.batch(
+        Arrays.asList(new RowMutations(row).add((Mutation) new Put(row)
+            .addColumn(FAMILY, CQ, new byte[MAX_KEY_VALUE_SIZE])),
+          new Delete(row)));
+      fail("Should fail since the put exceeds the max key value size");
+    } catch (IllegalArgumentException e) {
+      assertThat(e.getMessage(), containsString("KeyValue size too large"));
+    }
+  }
+
+  @Test
+  public void testInvalidPutInRowMutationsInCheckAndMutate() throws IOException {
+    final byte[] row = Bytes.toBytes(0);
+
+    AsyncTable<?> table = tableGetter.apply(TABLE_NAME);
+    try {
+      table.batch(Arrays.asList(new Delete(row), CheckAndMutate.newBuilder(row)
+        .ifNotExists(FAMILY, CQ)
+        .build(new RowMutations(row).add((Mutation) new Put(row)))));
+      fail("Should fail since the put does not contain any cells");
+    } catch (IllegalArgumentException e) {
+      assertThat(e.getMessage(), containsString("No columns to insert"));
+    }
+
+    try {
+      table.batch(
+        Arrays.asList(CheckAndMutate.newBuilder(row)
+            .ifNotExists(FAMILY, CQ)
+            .build(new RowMutations(row).add((Mutation) new Put(row)
+              .addColumn(FAMILY, CQ, new byte[MAX_KEY_VALUE_SIZE]))),
+          new Delete(row)));
       fail("Should fail since the put exceeds the max key value size");
     } catch (IllegalArgumentException e) {
       assertThat(e.getMessage(), containsString("KeyValue size too large"));

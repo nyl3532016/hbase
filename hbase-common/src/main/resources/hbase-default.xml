@@ -594,6 +594,13 @@ possible configurations would overwhelm and obscure the important.
     0 means never give up.</description>
   </property>
   <property>
+    <name>hbase.compaction.after.bulkload.enable</name>
+    <value>true</value>
+    <description>Request Compaction after bulkload immediately.
+      If bulkload is continuous, the triggered compactions may increase load,
+      bring about performance side effect.</description>
+  </property>
+  <property>
     <name>hbase.master.balancer.maxRitPercent</name>
     <value>1.0</value>
     <description>The max percent of regions in transition when balancing.
@@ -1013,9 +1020,7 @@ possible configurations would overwhelm and obscure the important.
   <property>
     <name>hbase.bucketcache.size</name>
     <value></value>
-    <description>A float that EITHER represents a percentage of total heap memory
-    size to give to the cache (if &lt; 1.0) OR, it is the total capacity in
-    megabytes of BucketCache. Default: 0.0</description>
+    <description>It is the total capacity in megabytes of BucketCache. Default: 0.0</description>
   </property>
   <property>
     <name>hbase.bucketcache.bucket.sizes</name>
@@ -1195,6 +1200,14 @@ possible configurations would overwhelm and obscure the important.
       to SIMPLE authentication, and will reject the connection.  WARNING: This setting should ONLY
       be used as a temporary measure while converting clients over to secure authentication.  It
       MUST BE DISABLED for secure operation.</description>
+  </property>
+  <property>
+    <name>hbase.unsafe.client.kerberos.hostname.disable.reversedns</name>
+    <value>false</value>
+    <description>This config is for experts: don't set its value unless you really know what you are doing.
+      When set to true, HBase client using SASL Kerberos will skip reverse DNS lookup and use provided
+      hostname of the destination for the principal instead. See https://issues.apache.org/jira/browse/HBASE-25665
+      for more details.</description>
   </property>
   <property>
     <name>hbase.display.keys</name>
@@ -1442,7 +1455,7 @@ possible configurations would overwhelm and obscure the important.
   </property>
   <property>
     <name>dfs.client.read.shortcircuit</name>
-    <value>false</value>
+    <value></value>
     <description>
       If set to true, this configuration parameter enables short-circuit local
       reads.
@@ -1450,7 +1463,7 @@ possible configurations would overwhelm and obscure the important.
   </property>
   <property>
     <name>dfs.domain.socket.path</name>
-    <value>none</value>
+    <value></value>
     <description>
       This is a path to a UNIX domain socket that will be used for
       communication between the DataNode and local HDFS clients, if
