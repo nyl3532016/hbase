@@ -443,13 +443,13 @@ public class ThriftAdmin implements Admin {
 
   @Override
   public boolean switchRpcThrottle(boolean enable) throws IOException {
-    throw new NotImplementedException("switchRpcThrottle by pattern not supported in ThriftAdmin");
+    throw new NotImplementedException("switchCompactionOffload by pattern not supported in ThriftAdmin");
   }
 
   @Override
   public boolean isRpcThrottleEnabled() throws IOException {
     throw new NotImplementedException(
-        "isRpcThrottleEnabled by pattern not supported in ThriftAdmin");
+        "isCompactionOffloadEnabled by pattern not supported in ThriftAdmin");
   }
 
   @Override

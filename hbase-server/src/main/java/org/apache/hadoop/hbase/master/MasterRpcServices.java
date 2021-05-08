@@ -332,6 +332,10 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.TruncateTa
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.TruncateTableResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.UnassignRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.UnassignRegionResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsCompactionOffloadEnabledRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsCompactionOffloadEnabledResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SwitchCompactionOffloadRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SwitchCompactionOffloadResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.GetQuotaStatesRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.GetQuotaStatesResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.GetQuotaStatesResponse.NamespaceQuotaSnapshot;
@@ -3443,6 +3447,28 @@ public class MasterRpcServices extends RSRpcServices implements
       namedQueueGetResponse.getBalancerDecisions();
     return MasterProtos.BalancerDecisionsResponse.newBuilder()
       .addAllBalancerDecision(balancerDecisions).build();
+  }
+
+  @Override
+  public IsCompactionOffloadEnabledResponse isCompactionOffloadEnabled(RpcController controller,
+    IsCompactionOffloadEnabledRequest request) throws ServiceException {
+    try {
+      master.checkInitialized();
+      return master.getCompactionServerManager().isCompactionOffloadEnabled(request);
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public SwitchCompactionOffloadResponse switchCompactionOffload(RpcController controller,
+    SwitchCompactionOffloadRequest request) throws ServiceException {
+    try {
+      master.checkInitialized();
+      return master.getCompactionServerManager().switchCompactionOffload(request);
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
   }
 
 }

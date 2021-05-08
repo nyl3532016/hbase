@@ -2381,13 +2381,13 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   @Override
   public void preSwitchRpcThrottle(ObserverContext<MasterCoprocessorEnvironment> ctx,
       boolean enable) throws IOException {
-    requirePermission(ctx, "switchRpcThrottle", Action.ADMIN);
+    requirePermission(ctx, "switchCompactionOffload", Action.ADMIN);
   }
 
   @Override
   public void preIsRpcThrottleEnabled(ObserverContext<MasterCoprocessorEnvironment> ctx)
       throws IOException {
-    requirePermission(ctx, "isRpcThrottleEnabled", Action.ADMIN);
+    requirePermission(ctx, "isCompactionOffloadEnabled", Action.ADMIN);
   }
 
   @Override

@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.compactionserver.CompactionOffloadSwitchStorage;
 import org.apache.hadoop.hbase.conf.ConfigurationManager;
 import org.apache.hadoop.hbase.conf.PropagatingConfigurationObserver;
 import org.apache.hadoop.hbase.quotas.RegionServerSpaceQuotaManager;
@@ -94,6 +95,8 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
   private volatile ThroughputController compactionThroughputController;
 
   private volatile boolean compactionsEnabled;
+  private volatile boolean compactionOffloadEnabled;
+  private CompactionOffloadSwitchStorage compactionOffloadSwitchStorage;
   /**
    * Splitting should not take place if the total number of regions exceed this.
    * This is not a hard limit to the number of regions but it is a guideline to
@@ -111,6 +114,13 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
     // compaction throughput controller
     this.compactionThroughputController =
         CompactionThroughputControllerFactory.create(server, conf);
+    this.compactionOffloadSwitchStorage =
+        new CompactionOffloadSwitchStorage(server.getZooKeeper(), server.getConfiguration());
+    try {
+      this.compactionOffloadEnabled = compactionOffloadSwitchStorage.isCompactionOffloadEnabled();
+    } catch (IOException e) {
+      this.compactionOffloadEnabled = false;
+    }
   }
 
   private void createSplitExcecutors() {

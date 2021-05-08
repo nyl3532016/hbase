@@ -30,6 +30,7 @@ import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.locking.EntityLock;
+import org.apache.hadoop.hbase.compactionserver.RegionServerCompactionOffloadManager;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
 import org.apache.hadoop.hbase.ipc.RpcServerInterface;
@@ -82,6 +83,12 @@ public interface RegionServerServices extends Server, MutableOnlineRegions, Favo
    * @return the RegionServerAccounting for this Region Server
    */
   RegionServerAccounting getRegionServerAccounting();
+
+  /**
+   * @return RegionServer's instance of {@link RegionServerRpcQuotaManager}
+   */
+  RegionServerCompactionOffloadManager getRegionServerCompactionOffloadManager();
+
 
   /**
    * @return RegionServer's instance of {@link RegionServerRpcQuotaManager}

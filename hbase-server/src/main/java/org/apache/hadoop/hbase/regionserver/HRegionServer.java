@@ -92,6 +92,7 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.locking.EntityLock;
 import org.apache.hadoop.hbase.client.locking.LockServiceClient;
+import org.apache.hadoop.hbase.compactionserver.RegionServerCompactionOffloadManager;
 import org.apache.hadoop.hbase.conf.ConfigurationManager;
 import org.apache.hadoop.hbase.conf.ConfigurationObserver;
 import org.apache.hadoop.hbase.coordination.ZkCoordinatedStateManager;
@@ -464,6 +465,7 @@ public class HRegionServer extends AbstractServer implements
 
   private RegionServerProcedureManagerHost rspmHost;
 
+  private RegionServerCompactionOffloadManager regionServerCompactionOffloadManager;
   private RegionServerRpcQuotaManager rsQuotaManager;
   private RegionServerSpaceQuotaManager rsSpaceQuotaManager;
 
@@ -2053,6 +2055,8 @@ public class HRegionServer extends AbstractServer implements
       nonceManagerChore = this.nonceManager.createCleanupScheduledChore(this);
     }
 
+    regionServerCompactionOffloadManager = new RegionServerCompactionOffloadManager(this);
+
     // Setup the Quota Manager
     rsQuotaManager = new RegionServerRpcQuotaManager(this);
     rsSpaceQuotaManager = new RegionServerSpaceQuotaManager(this);
@@ -2911,6 +2915,11 @@ public class HRegionServer extends AbstractServer implements
   @Override
   public RegionServerRpcQuotaManager getRegionServerRpcQuotaManager() {
     return rsQuotaManager;
+  }
+
+  @Override
+  public RegionServerCompactionOffloadManager getRegionServerCompactionOffloadManager() {
+    return regionServerCompactionOffloadManager;
   }
 
   //

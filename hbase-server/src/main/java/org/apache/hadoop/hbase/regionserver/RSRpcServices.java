@@ -82,6 +82,7 @@ import org.apache.hadoop.hbase.client.Row;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.VersionInfoUtil;
+import org.apache.hadoop.hbase.compactionserver.RegionServerCompactionOffloadManager;
 import org.apache.hadoop.hbase.exceptions.FailedSanityCheckException;
 import org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException;
 import org.apache.hadoop.hbase.exceptions.ScannerResetException;
@@ -1415,6 +1416,10 @@ public class RSRpcServices extends AbstractRpcServices implements
 
   private RegionServerRpcQuotaManager getRpcQuotaManager() {
     return regionServer.getRegionServerRpcQuotaManager();
+  }
+
+  private RegionServerCompactionOffloadManager getCompactionOffloadManager(){
+    return regionServer.getRegionServerCompactionOffloadManager();
   }
 
   private RegionServerSpaceQuotaManager getSpaceQuotaManager() {
