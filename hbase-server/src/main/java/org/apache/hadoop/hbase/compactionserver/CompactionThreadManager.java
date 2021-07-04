@@ -269,7 +269,7 @@ public class CompactionThreadManager implements ThroughputControllerService {
   /**
    * Execute compaction in the process of compaction server
    */
-  private void doCompaction(CompactionTask compactionTask) throws IOException {
+  private void doCompaction(CompactionTask compactionTask) {
     RegionInfo regionInfo = compactionTask.getRegionInfo();
     ColumnFamilyDescriptor cfd = compactionTask.getCfd();
     HStore store = compactionTask.getStore();
@@ -287,6 +287,10 @@ public class CompactionThreadManager implements ThroughputControllerService {
         newFileNames.add(newFile.getName());
       }
       reportCompactionCompleted(compactionTask, newFileNames, status);
+    } catch (IOException ioe) {
+      LOG.error("compact task {} error: {}", compactionTask, ioe);
+      // we can retry when compactionContext.compact throw IOException
+
     } finally {
       status.setStatus("Remove selected files");
       LOG.info("Remove selected files: {}", compactionTask);
@@ -296,10 +300,9 @@ public class CompactionThreadManager implements ThroughputControllerService {
 
   /**
    * Report compaction completed to RS
-   * @return True if report to RS success, otherwise false
    */
-  private boolean reportCompactionCompleted(CompactionTask task, List<String> newFiles,
-      MonitoredTask status) throws IOException {
+  private void reportCompactionCompleted(CompactionTask task, List<String> newFiles,
+      MonitoredTask status) {
     ServerName rsServerName = task.getRsServerName();
     RegionInfo regionInfo = task.getRegionInfo();
     ColumnFamilyDescriptor cfd = task.getCfd();
@@ -336,12 +339,10 @@ public class CompactionThreadManager implements ThroughputControllerService {
         status.abort("Report to RS succeeded but RS denied");
         LOG.warn("Compaction manager request complete compaction fail. {}", task);
       }
-      return true;
     } catch (IOException e) {
       //TODO: rpc call broken, add retry
       status.abort("Report to RS failed");
       LOG.error("Compaction manager request complete compaction error. {}", task, e);
-      return false;
     }
   }
 

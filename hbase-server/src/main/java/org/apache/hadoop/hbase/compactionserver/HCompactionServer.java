@@ -251,7 +251,6 @@ public class HCompactionServer extends AbstractServer {
     if (this.compactionThreadManager != null) {
       this.compactionThreadManager.waitForStop();
     }
-
   }
 
   private void stopChores() {
