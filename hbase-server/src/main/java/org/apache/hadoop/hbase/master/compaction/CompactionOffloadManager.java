@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.hbase.CompactionServerMetrics;
 import org.apache.hadoop.hbase.HConstants;
@@ -44,6 +45,7 @@ import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.CompactionProtos.CompactRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.CompactionProtos.CompactResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsCompactionOffloadEnabledRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsCompactionOffloadEnabledResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SwitchCompactionOffloadRequest;
@@ -169,7 +171,16 @@ public class CompactionOffloadManager {
     LOG.info("Receive compaction request from {}, and send to Compaction server:{}",
       ProtobufUtil.toString(request), targetCompactionServer);
     try {
-      FutureUtils.get(getCsStub(targetCompactionServer).requestCompaction(request));
+      List<ServerName> favoredNodes = this.masterServices.getFavoredNodesManager()
+          .getFavoredNodes(ProtobufUtil.toRegionInfo(request.getRegionInfo()));
+      CompactRequest.Builder newBuilder = CompactRequest.newBuilder(request);
+      if (favoredNodes != null && !favoredNodes.isEmpty()) {
+        newBuilder.addAllFavoredNodes(
+          favoredNodes.stream().map(ProtobufUtil::toServerName).collect(Collectors.toList()));
+      } else {
+        newBuilder.addFavoredNodes(request.getServer());
+      }
+      FutureUtils.get(getCsStub(targetCompactionServer).requestCompaction(newBuilder.build()));
       return CompactResponse.newBuilder().build();
     } catch (Throwable t) {
       LOG.error("requestCompaction from master to CS error: {}", t);
